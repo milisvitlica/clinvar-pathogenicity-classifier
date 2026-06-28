@@ -34,10 +34,10 @@ Run in dependency order (ingest downloads from NCBI/UniProt and needs network):
 
 ```bash
 python src/ingest_clinvar.py      # -> data/raw/clinvar_reliable_grch38.parquet
-python src/clean_clinvar.py       # -> data/processed/clinvar_rag.parquet (adds `label`)
+python src/clean_clinvar.py       # -> data/processed/clinvar_clean.parquet (adds `label`)
 
 python src/ingest_uniprot.py      # -> data/raw/uniprot_human_reviewed.parquet
-python src/clean_uniprot.py       # -> data/processed/uniprot_rag.parquet
+python src/clean_uniprot.py       # -> data/processed/uniprot_clean.parquet
 
 python src/build_joined_dataset.py  # -> data/processed/joined.parquet
 ```
@@ -56,8 +56,8 @@ Open with JupyterLab (`jupyter lab`) and run top to bottom:
 src/
   ingest_clinvar.py        # download ClinVar -> raw parquet
   ingest_uniprot.py        # download UniProt -> raw parquet
-  clean_clinvar.py         # filter + label -> clinvar_rag.parquet
-  clean_uniprot.py         # filter + tidy  -> uniprot_rag.parquet
+  clean_clinvar.py         # filter + label -> clinvar_clean.parquet
+  clean_uniprot.py         # filter + tidy  -> uniprot_clean.parquet
   build_joined_dataset.py  # outer-join cleaned parquets -> joined.parquet
 notebooks/
   clinvar_eda.ipynb

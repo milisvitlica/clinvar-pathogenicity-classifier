@@ -11,15 +11,18 @@ CLINVAR_URL = "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/variant_su
 
 columns = [
     "VariationID", "Name", "GeneSymbol", "Chromosome", "Start", "Stop",
+    "ReferenceAlleleVCF", "AlternateAlleleVCF",
     "ClinicalSignificance", "ReviewStatus",
-    "Type", "PhenotypeList", "PhenotypeIDS", "Assembly", "HGNC_ID",
+    "Type", "OriginSimple", "PhenotypeList", "PhenotypeIDS", "Assembly", "HGNC_ID",
     "NumberSubmitters", "LastEvaluated",
 ]
 dtype_map = {
     "VariationID": "int32", "Name": "string", "GeneSymbol": "category",
     "Chromosome": "category", "Start": "Int64", "Stop": "Int64",
+    "ReferenceAlleleVCF": "string", "AlternateAlleleVCF": "string",
     "ClinicalSignificance": "category", "ReviewStatus": "category",
-    "Type": "category", "PhenotypeList": "string", "PhenotypeIDS": "string",
+    "Type": "category", "OriginSimple": "category",
+    "PhenotypeList": "string", "PhenotypeIDS": "string",
     "Assembly": "category", "HGNC_ID": "string", "NumberSubmitters": "Int16",
 }
 allowed_review = {

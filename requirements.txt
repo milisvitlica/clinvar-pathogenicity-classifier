@@ -1,5 +1,6 @@
 pandas
 pyarrow
+requests
 numpy
 scikit-learn
 xgboost

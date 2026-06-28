@@ -16,8 +16,8 @@ import pandas as pd
 project_root = Path(__file__).resolve().parents[1]
 data_processed = project_root / "data/processed"
 
-UNIPROT_CLEAN = data_processed / "uniprot_rag.parquet"
-CLINVAR_CLEAN = data_processed / "clinvar_rag.parquet"
+UNIPROT_CLEAN = data_processed / "uniprot_clean.parquet"
+CLINVAR_CLEAN = data_processed / "clinvar_clean.parquet"
 JOINED_OUT = data_processed / "joined.parquet"
 
 GENE_KEY = "gene_key"

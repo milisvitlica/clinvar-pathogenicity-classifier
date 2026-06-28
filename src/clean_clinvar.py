@@ -1,7 +1,7 @@
 """Clean the raw ClinVar parquet into a labelled, classifier-ready table.
 
 Reads data/raw/clinvar_reliable_grch38.parquet (from ingest_clinvar.py) and writes
-data/processed/clinvar_rag.parquet. Keeps only expert-reviewed single-nucleotide
+data/processed/clinvar_clean.parquet. Keeps only expert-reviewed single-nucleotide
 variants with a definite (non-VUS) clinical significance, and adds a binary
 `label` (pathogenic / benign) used as the classification target.
 """
@@ -15,7 +15,7 @@ data_raw = project_root / "data/raw"
 data_processed = project_root / "data/processed"
 
 CLINVAR_RAW = data_raw / "clinvar_reliable_grch38.parquet"
-CLINVAR_CLEAN = data_processed / "clinvar_rag.parquet"
+CLINVAR_CLEAN = data_processed / "clinvar_clean.parquet"
 
 BENIGN = {"Likely benign", "Benign", "Benign/Likely benign"}
 PATHOGENIC = {"Pathogenic", "Pathogenic/Likely pathogenic", "Likely pathogenic"}

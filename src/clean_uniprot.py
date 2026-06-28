@@ -1,7 +1,7 @@
 """Clean the raw UniProt parquet into a classifier-ready protein feature table.
 
 Reads data/raw/uniprot_human_reviewed.parquet (from ingest_uniprot.py) and writes
-data/processed/uniprot_rag.parquet: reviewed human proteins with disease
+data/processed/uniprot_clean.parquet: reviewed human proteins with disease
 involvement, with the leading "FUNCTION:/DISEASE:/TISSUE SPECIFICITY:" prefixes
 stripped from the free-text columns.
 """
@@ -15,7 +15,7 @@ data_raw = project_root / "data/raw"
 data_processed = project_root / "data/processed"
 
 UNIPROT_RAW = data_raw / "uniprot_human_reviewed.parquet"
-UNIPROT_CLEAN = data_processed / "uniprot_rag.parquet"
+UNIPROT_CLEAN = data_processed / "uniprot_clean.parquet"
 
 
 def main() -> None:
