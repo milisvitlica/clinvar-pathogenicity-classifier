@@ -1,4 +1,4 @@
-"""Outer-join cleaned UniProt + ClinVar parquets on gene and write data/processed/joined.parquet.
+"""Outer-join cleaned UniProt + ClinVar parquets on gene and write data/processed/clinvar_uniprot_joined.parquet.
 
 Join key: UniProt primary gene (first token of "Gene Names") == ClinVar gene.
 ClinVar "GeneSymbol" is a ";"-delimited list of genes (e.g. "KLLN;LOC130004273;MLDHR;PTEN"),
@@ -18,7 +18,7 @@ data_processed = project_root / "data/processed"
 
 UNIPROT_CLEAN = data_processed / "uniprot_clean.parquet"
 CLINVAR_CLEAN = data_processed / "clinvar_clean.parquet"
-JOINED_OUT = data_processed / "joined.parquet"
+JOINED_OUT = data_processed / "clinvar_uniprot_joined.parquet"
 
 GENE_KEY = "gene_key"
 
