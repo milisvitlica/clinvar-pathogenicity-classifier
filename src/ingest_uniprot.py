@@ -22,10 +22,10 @@ SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
 FIELDS = (
     "accession,id,gene_names,protein_name,length,"
     "cc_function,cc_disease,cc_subcellular_location,cc_interaction,"
-    "ft_domain,ft_region,ft_zn_fing,cc_domain,"
+    "ft_domain,ft_region,ft_zn_fing,"
     "ft_act_site,ft_binding,ft_disulfid,ft_mod_res,"
-    "ft_variant,cc_polymorphism,"
-    "cc_tissue_specificity,cc_developmental_stage"
+    "ft_variant,"
+    "cc_tissue_specificity"
 )
 PARAMS = {
     "query": "(organism_id:9606) AND (reviewed:true)",
