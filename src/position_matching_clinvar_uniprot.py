@@ -1,8 +1,10 @@
 """Add protein-position context to the gene-level ClinVar–UniProt join.
 
 Reads data/processed/clinvar_uniprot_joined.parquet, extracts the amino-acid
-position from ClinVar HGVS protein notation (p.), and flags which UniProt
-feature intervals (domain, region, active site, etc.) contain that position.
+position from ClinVar HGVS protein notation (p.), and annotates each variant
+with UniProt feature overlap flags plus the closest annotated feature and its
+distance (in amino-acid residues).
+
 Writes data/processed/clinvar_uniprot_position_matched.parquet (leaves the
 gene-level join unchanged).
 """
@@ -29,6 +31,17 @@ FEATURE_COLUMNS: dict[str, str] = {
     "Modified residue": "MOD_RES",
 }
 
+# Prefer functional sites when several features share the same distance.
+FEATURE_TYPE_PRIORITY: dict[str, int] = {
+    "ACT_SITE": 0,
+    "BINDING": 1,
+    "ZN_FING": 2,
+    "MOD_RES": 3,
+    "DISULFID": 4,
+    "DOMAIN": 5,
+    "REGION": 6,
+}
+
 CONTEXT_COLUMNS = [
     "protein_position",
     "has_protein_position",
@@ -43,6 +56,9 @@ CONTEXT_COLUMNS = [
     "in_mod_res",
     "in_functional_site",
     "in_any_feature",
+    "closest_feature_type",
+    "closest_feature_description",
+    "distance_to_closest_feature",
 ]
 
 PROTEIN_HGVS_RE = re.compile(r"p\.[A-Za-z]{3}(\d+)")
@@ -88,6 +104,33 @@ def build_features_by_entry(proteins: pd.DataFrame) -> dict[str, list[dict]]:
     return features_by_entry
 
 
+def feature_distance(pos: int, feat: dict) -> int:
+    """Amino-acid distance from ``pos`` to a UniProt feature.
+
+    Interval features (domain, region, …): 0 if inside ``[start, end]``, else
+    distance to the nearer boundary.
+
+    Disulfide bonds annotate the two bonded cysteines, not the intervening
+    span, so distance is to the nearer endpoint.
+    """
+    start, end = feat["start"], feat["end"]
+    if feat["feature_type"] == "DISULFID" and start != end:
+        return min(abs(pos - start), abs(pos - end))
+    if start <= pos <= end:
+        return 0
+    if pos < start:
+        return start - pos
+    return pos - end
+
+
+def position_overlaps_feature(pos: int, feat: dict) -> bool:
+    """True when ``pos`` lies on the annotated feature (not merely near it)."""
+    start, end = feat["start"], feat["end"]
+    if feat["feature_type"] == "DISULFID" and start != end:
+        return pos == start or pos == end
+    return start <= pos <= end
+
+
 def _empty_context() -> dict:
     return {
         "in_domain": False,
@@ -101,6 +144,9 @@ def _empty_context() -> dict:
         "in_mod_res": False,
         "in_functional_site": False,
         "in_any_feature": False,
+        "closest_feature_type": None,
+        "closest_feature_description": None,
+        "distance_to_closest_feature": pd.NA,
     }
 
 
@@ -109,7 +155,7 @@ def get_protein_context(
     protein_pos,
     features_by_entry: dict[str, list[dict]],
 ) -> dict:
-    """Return boolean flags and labels for features overlapping ``protein_pos``."""
+    """Return overlap flags plus closest UniProt feature and distance."""
     if pd.isna(protein_pos) or entry not in features_by_entry:
         return _empty_context()
 
@@ -118,8 +164,24 @@ def get_protein_context(
     domain_names: list[str] = []
     region_names: list[str] = []
 
-    for feat in features_by_entry[entry]:
-        if not feat["start"] <= pos <= feat["end"]:
+    features = features_by_entry[entry]
+    if not features:
+        return result
+
+    closest = min(
+        features,
+        key=lambda feat: (
+            feature_distance(pos, feat),
+            FEATURE_TYPE_PRIORITY.get(feat["feature_type"], 99),
+            feat["start"],
+        ),
+    )
+    result["closest_feature_type"] = closest["feature_type"]
+    result["closest_feature_description"] = closest["description"]
+    result["distance_to_closest_feature"] = feature_distance(pos, closest)
+
+    for feat in features:
+        if not position_overlaps_feature(pos, feat):
             continue
         ftype = feat["feature_type"]
         if ftype == "DOMAIN":
@@ -160,7 +222,7 @@ def get_protein_context(
 
 
 def enrich_joined_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Add protein position and UniProt feature-overlap columns."""
+    """Add protein position, overlap flags, and closest-feature columns."""
     df = df.copy()
 
     proteins = df[df["Entry"].notna()].copy()
@@ -174,6 +236,9 @@ def enrich_joined_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
     context_df = pd.DataFrame(context.tolist(), index=df.index)
+    context_df["distance_to_closest_feature"] = context_df["distance_to_closest_feature"].astype(
+        "Int64"
+    )
     return pd.concat([df, context_df], axis=1)
 
 
@@ -185,21 +250,37 @@ def main() -> None:
     enriched.to_parquet(POSITION_MATCHED_OUT, index=False)
 
     both = enriched[enriched["match_type"] == "both"]
-    with_pos = both["has_protein_position"].sum()
+    with_pos = both[both["has_protein_position"]]
     in_domain = both["in_domain"].sum()
     in_functional = both["in_functional_site"].sum()
+    has_closest = with_pos["closest_feature_type"].notna().sum()
+    inside = (with_pos["distance_to_closest_feature"] == 0).sum()
 
     print("Read gene-level join:", JOINED_IN, df.shape)
     print("Saved position-matched parquet:", POSITION_MATCHED_OUT, enriched.shape)
     print(
-        f"Matched variants with protein position: {with_pos:,} / {len(both):,} "
-        f"({with_pos / len(both):.1%})"
+        f"Matched variants with protein position: {len(with_pos):,} / {len(both):,} "
+        f"({len(with_pos) / len(both):.1%})"
     )
     print(f"Matched variants in a UniProt domain: {in_domain:,} ({in_domain / len(both):.1%})")
     print(
         f"Matched variants in active/binding/zinc-finger site: "
         f"{in_functional:,} ({in_functional / len(both):.1%})"
     )
+    print(
+        f"With position and a closest feature: {has_closest:,} / {len(with_pos):,} "
+        f"({has_closest / len(with_pos):.1%})"
+    )
+    print(
+        f"Distance 0 (inside closest feature): {inside:,} / {len(with_pos):,} "
+        f"({inside / len(with_pos):.1%})"
+    )
+    if has_closest:
+        dist = with_pos["distance_to_closest_feature"].dropna()
+        print(
+            f"Distance to closest feature — median {dist.median():.0f}, "
+            f"mean {dist.mean():.1f}"
+        )
 
 
 if __name__ == "__main__":
