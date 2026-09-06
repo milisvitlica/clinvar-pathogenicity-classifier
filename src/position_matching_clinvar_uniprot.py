@@ -1,16 +1,17 @@
 """Add protein-position context to the gene-level ClinVar–UniProt join.
 
-Reads data/processed/clinvar_uniprot_joined.parquet, extracts the amino-acid
-position from ClinVar HGVS protein notation (p.), and annotates each variant
-with UniProt feature overlap flags plus the closest annotated feature and its
-distance (in amino-acid residues).
+Reads a joined parquet (default: clinvar_uniprot_joined.parquet), extracts the
+amino-acid position from ClinVar HGVS protein notation (p.), and annotates each
+variant with UniProt feature overlap flags plus the closest annotated feature
+and its distance (in amino-acid residues).
 
-Writes data/processed/clinvar_uniprot_position_matched.parquet (leaves the
-gene-level join unchanged).
+Writes clinvar_uniprot_position_matched.parquet by default (leaves the gene-level
+join unchanged). For VUS: ``--vus`` or ``--in`` / ``--out`` pointing at the VUS join.
 """
 
 from __future__ import annotations
 
+import argparse
 import re
 from pathlib import Path
 
@@ -19,7 +20,9 @@ import pandas as pd
 project_root = Path(__file__).resolve().parents[1]
 data_processed = project_root / "data/processed"
 JOINED_IN = data_processed / "clinvar_uniprot_joined.parquet"
+JOINED_VUS_IN = data_processed / "clinvar_uniprot_joined_vus.parquet"
 POSITION_MATCHED_OUT = data_processed / "clinvar_uniprot_position_matched.parquet"
+POSITION_MATCHED_VUS_OUT = data_processed / "clinvar_uniprot_position_matched_vus.parquet"
 
 FEATURE_COLUMNS: dict[str, str] = {
     "Domain [FT]": "DOMAIN",
@@ -242,12 +245,25 @@ def enrich_joined_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([df, context_df], axis=1)
 
 
-def main() -> None:
-    df = pd.read_parquet(JOINED_IN)
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--in", dest="joined_in", type=Path, default=JOINED_IN)
+    parser.add_argument("--out", type=Path, default=POSITION_MATCHED_OUT)
+    parser.add_argument(
+        "--vus",
+        action="store_true",
+        help=f"Shortcut: in={JOINED_VUS_IN.name}, out={POSITION_MATCHED_VUS_OUT.name}",
+    )
+    args = parser.parse_args(argv)
+
+    joined_in = JOINED_VUS_IN if args.vus else args.joined_in
+    out_path = POSITION_MATCHED_VUS_OUT if args.vus else args.out
+
+    df = pd.read_parquet(joined_in)
     enriched = enrich_joined_dataframe(df)
 
     data_processed.mkdir(parents=True, exist_ok=True)
-    enriched.to_parquet(POSITION_MATCHED_OUT, index=False)
+    enriched.to_parquet(out_path, index=False)
 
     both = enriched[enriched["match_type"] == "both"]
     with_pos = both[both["has_protein_position"]]
@@ -255,25 +271,27 @@ def main() -> None:
     in_functional = both["in_functional_site"].sum()
     has_closest = with_pos["closest_feature_type"].notna().sum()
     inside = (with_pos["distance_to_closest_feature"] == 0).sum()
+    n_both = max(len(both), 1)
+    n_with_pos = max(len(with_pos), 1)
 
-    print("Read gene-level join:", JOINED_IN, df.shape)
-    print("Saved position-matched parquet:", POSITION_MATCHED_OUT, enriched.shape)
+    print("Read gene-level join:", joined_in, df.shape)
+    print("Saved position-matched parquet:", out_path, enriched.shape)
     print(
         f"Matched variants with protein position: {len(with_pos):,} / {len(both):,} "
-        f"({len(with_pos) / len(both):.1%})"
+        f"({len(with_pos) / n_both:.1%})"
     )
-    print(f"Matched variants in a UniProt domain: {in_domain:,} ({in_domain / len(both):.1%})")
+    print(f"Matched variants in a UniProt domain: {in_domain:,} ({in_domain / n_both:.1%})")
     print(
         f"Matched variants in active/binding/zinc-finger site: "
-        f"{in_functional:,} ({in_functional / len(both):.1%})"
+        f"{in_functional:,} ({in_functional / n_both:.1%})"
     )
     print(
         f"With position and a closest feature: {has_closest:,} / {len(with_pos):,} "
-        f"({has_closest / len(with_pos):.1%})"
+        f"({has_closest / n_with_pos:.1%})"
     )
     print(
         f"Distance 0 (inside closest feature): {inside:,} / {len(with_pos):,} "
-        f"({inside / len(with_pos):.1%})"
+        f"({inside / n_with_pos:.1%})"
     )
     if has_closest:
         dist = with_pos["distance_to_closest_feature"].dropna()

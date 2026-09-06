@@ -158,8 +158,13 @@ def nested_tune(
     """Inner gene-grouped CV on ``pool``.
 
     Returns best hyperparameters, mean inner AUC, refit tree budget
-    (median of ``best_iteration + 1``), and a probability cutoff chosen on the
-    winning config's inner-test scores (Youden or F1) — nested thresholding.
+    (median of ``best_iteration + 1``), and a probability cutoff — nested
+    thresholding via the **median of per-inner-fold** cutoffs (not pooled
+    scores; fold score scales differ). Default cutoff rule is Youden's J;
+    plain F1 often collapses to near-all-pathogenic on path-heavy folds.
+
+    Each fit sets ``scale_pos_weight = n_benign / n_pathogenic`` from that fit's
+    training labels unless the sampled params already include it.
     """
     inner_folds = sorted(int(f) for f in pool["fold"].unique())
     if len(inner_folds) < 2:
@@ -177,8 +182,7 @@ def nested_tune(
         params = dict(params)
         fold_aucs = []
         fold_n_trees = []
-        inner_y = []
-        inner_proba = []
+        fold_thresholds = []
         for i, inner_test_fold in enumerate(inner_folds):
             candidates = [f for f in inner_folds if f != inner_test_fold]
             valid_fold = candidates[i % len(candidates)]
@@ -196,14 +200,13 @@ def nested_tune(
             fold_aucs.append(inner_test_auc)
             fold_n_trees.append(int(model.best_iteration) + 1)
             y_inner = (test_df[TARGET_COLUMN] == "pathogenic").astype(int).to_numpy()
-            inner_y.append(y_inner)
-            inner_proba.append(proba_test)
+            fold_thresholds.append(
+                pick_threshold(y_inner, proba_test, method=threshold_method)
+            )
 
         mean_auc = float(np.mean(fold_aucs))
         median_trees = int(np.median(fold_n_trees))
-        y_cat = np.concatenate(inner_y)
-        p_cat = np.concatenate(inner_proba)
-        threshold = pick_threshold(y_cat, p_cat, method=threshold_method)
+        threshold = float(np.median(fold_thresholds))
         trial_rows.append(
             {
                 "trial": trial_idx,
@@ -242,8 +245,10 @@ def run_nested_cv(
 ) -> dict:
     """Nested gene-grouped CV: tune θ, n_estimators, and decision threshold inwardly.
 
-    Outer refit trains on the full pool with the inner-chosen tree budget, then
-    applies the inner-chosen probability cutoff to the outer test fold.
+    Fits use ``scale_pos_weight`` from training-label counts. Outer refit trains on
+    the full pool with the inner-chosen tree budget, then applies the inner-chosen
+    probability cutoff (default Youden's J; median of per-inner-fold thresholds)
+    to the outer test fold.
     """
     if folded is None:
         folded = run_cv_folds(n_folds=n_folds, seed=seed)

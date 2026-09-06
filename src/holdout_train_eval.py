@@ -32,6 +32,7 @@ project_root = Path(__file__).resolve().parents[1]
 data_processed = project_root / "data/processed"
 
 POSITION_MATCHED_IN = data_processed / "clinvar_uniprot_position_matched.parquet"
+POSITION_MATCHED_VUS_IN = data_processed / "clinvar_uniprot_position_matched_vus.parquet"
 TRAIN_OUT = data_processed / "train.parquet"
 VALID_OUT = data_processed / "valid.parquet"
 TEST_OUT = data_processed / "test.parquet"
@@ -92,26 +93,60 @@ DEFAULT_XGB_PARAMS = {
 }
 
 
-def prepare_modeling_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter to matched labelled variants and deduplicate to one row per VariationID."""
-    frame = df[df["match_type"] == "both"].copy()
-    frame = frame[frame[TARGET_COLUMN].isin(["pathogenic", "benign"])].copy()
+def _dedupe_matched_variants(frame: pd.DataFrame) -> pd.DataFrame:
+    """One row per VariationID, preferring rows with a parsed protein position."""
+    frame = frame.copy()
     frame[ID_COLUMN] = frame[ID_COLUMN].astype("Int64")
-
     frame["_rank_pos"] = (~frame["has_protein_position"]).astype(int)
-    frame = (
+    return (
         frame.sort_values([ID_COLUMN, "_rank_pos", "Entry"], kind="mergesort")
         .drop_duplicates(ID_COLUMN, keep="first")
         .drop(columns="_rank_pos")
         .reset_index(drop=True)
     )
 
+
+def _add_relative_protein_position(frame: pd.DataFrame) -> pd.DataFrame:
     length = pd.to_numeric(frame["Length"], errors="coerce")
     pos = pd.to_numeric(frame["protein_position"], errors="coerce")
+    frame = frame.copy()
     frame["relative_protein_position"] = (pos / length).where(length > 0)
+    return frame
+
+
+def prepare_modeling_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Filter to matched labelled variants and deduplicate to one row per VariationID."""
+    frame = df[df["match_type"] == "both"].copy()
+    frame = frame[frame[TARGET_COLUMN].isin(["pathogenic", "benign"])].copy()
+    frame = _dedupe_matched_variants(frame)
+    frame = _add_relative_protein_position(frame)
 
     if frame[GROUP_COLUMN].isna().any():
         raise ValueError("Modeling rows are missing gene labels needed for the group split.")
+
+    return frame
+
+
+def prepare_inference_frame(
+    df: pd.DataFrame,
+    *,
+    labels: set[str] | None = None,
+) -> pd.DataFrame:
+    """Matched UniProt–ClinVar rows ready for scoring (one row per VariationID).
+
+    Unlike ``prepare_modeling_frame``, this keeps non-training labels (e.g. ``vus``).
+    Pass ``labels=None`` to keep any label among matched rows.
+    """
+    frame = df[df["match_type"] == "both"].copy()
+    if labels is not None:
+        frame = frame[frame[TARGET_COLUMN].isin(labels)].copy()
+    if frame.empty:
+        raise ValueError("No matched variants available for inference.")
+    frame = _dedupe_matched_variants(frame)
+    frame = _add_relative_protein_position(frame)
+
+    if frame[GROUP_COLUMN].isna().any():
+        raise ValueError("Inference rows are missing gene labels.")
 
     return frame
 
@@ -271,6 +306,16 @@ def run_split(
     return frames
 
 
+def scale_pos_weight_from_labels(y: pd.Series | np.ndarray) -> float:
+    """XGBoost ``scale_pos_weight`` ≈ n_negative / n_positive (benign / pathogenic)."""
+    y = np.asarray(y).astype(int)
+    n_pos = int((y == 1).sum())
+    n_neg = int((y == 0).sum())
+    if n_pos == 0:
+        return 1.0
+    return float(n_neg / n_pos)
+
+
 def make_xgb_model(
     *,
     seed: int = DEFAULT_SEED,
@@ -284,7 +329,7 @@ def make_xgb_model(
     kwargs: dict = dict(
         n_estimators=n_estimators,
         objective="binary:logistic",
-        eval_metric="auc",
+        eval_metric="aucpr",
         enable_categorical=True,
         tree_method="hist",
         random_state=seed,
@@ -310,6 +355,9 @@ def fit_predict(
     X_valid, y_valid = build_feature_matrix(valid_df)
     X_test, y_test = build_feature_matrix(test_df)
     X_train, X_valid, X_test = align_categories_to_train(X_train, X_valid, X_test)
+
+    if "scale_pos_weight" not in params:
+        params["scale_pos_weight"] = scale_pos_weight_from_labels(y_train)
 
     model = make_xgb_model(seed=seed, **params)
     model.fit(
@@ -339,6 +387,9 @@ def fit_predict_fixed_trees(
     X_train, y_train = build_feature_matrix(train_df)
     X_test, y_test = build_feature_matrix(test_df)
     X_train, X_test = align_categories_to_train(X_train, X_test)
+
+    if "scale_pos_weight" not in params:
+        params["scale_pos_weight"] = scale_pos_weight_from_labels(y_train)
 
     model = make_xgb_model(
         seed=seed,
