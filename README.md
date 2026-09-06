@@ -84,10 +84,10 @@ not report it as model performance.
 
 ```bash
 python src/cv_train_eval.py          # write data/processed/cv_folds.parquet
-# then open notebooks/cv_xgboost.ipynb
+# then open notebooks/modeling/xgboost/cv_xgboost.ipynb
 ```
 
-Gene-grouped **nested CV** (`src/cv_train_eval.py` / `notebooks/cv_xgboost.ipynb`):
+Gene-grouped **nested CV** (`src/cv_train_eval.py` / `notebooks/modeling/xgboost/cv_xgboost.ipynb`):
 
 - Outer folds → test metrics (report these)
 - Inner CV (on the outer-train pool only) → hyperparameters, tree budget
@@ -107,7 +107,6 @@ Do not use pooled OOF ROC as the headline number (fold score scales differ).
 
 ```bash
 python src/holdout_train_eval.py     # train/valid/test parquets
-# notebooks/train_xgboost.ipynb
 ```
 
 ### Final classifier (single-loop CV tune → fit all)
@@ -117,7 +116,7 @@ on the full labelled table, then fit on every labelled row:
 
 ```bash
 python src/final_model.py
-# or notebooks/train_final_xgboost.ipynb
+# or notebooks/modeling/xgboost/train_final_xgboost.ipynb
 ```
 
 Writes:
@@ -129,19 +128,27 @@ Writes:
 ### Inference
 
 ```bash
-# notebooks/infer_xgboost.ipynb
+# notebooks/modeling/xgboost/infer_xgboost.ipynb
 ```
 
 Scores **ClinVar VUS** from `clinvar_uniprot_position_matched_vus.parquet` with the
 saved model + Youden threshold (writes `data/processed/vus_inference_predictions.parquet`).
 API: `predict_pathogenicity()` / `prepare_inference_frame()` in `src/`.
 
-## EDA notebooks
+## Notebooks
 
-- `notebooks/clinvar_eda.ipynb`
-- `notebooks/uniprot_eda.ipynb`
-- `notebooks/joined_clinvar_uniprot_eda.ipynb`
-- `notebooks/position_matching_eda.ipynb`
+### EDA (`notebooks/eda/`)
+
+- `clinvar_eda.ipynb`
+- `uniprot_eda.ipynb`
+- `joined_clinvar_uniprot_eda.ipynb`
+- `position_matching_eda.ipynb`
+
+### Modeling (`notebooks/modeling/xgboost/`)
+
+- `cv_xgboost.ipynb` — stage 1: nested CV evaluation
+- `train_final_xgboost.ipynb` — stage 2: full-data CV tune → deploy model
+- `infer_xgboost.ipynb` — score new rows (e.g. VUS)
 
 ## Project layout
 
@@ -155,11 +162,16 @@ src/
   cv_train_eval.py           # gene CV folds + nested CV (honest KPIs)
   final_model.py             # single-loop full-data tune + fit all + inference
 notebooks/
-  *_eda.ipynb
-  train_xgboost.ipynb        # holdout baseline
-  cv_xgboost.ipynb           # stage 1: nested CV evaluation
-  train_final_xgboost.ipynb  # stage 2: full-data CV tune → deploy model
-  infer_xgboost.ipynb        # score new rows (e.g. VUS)
+  eda/
+    clinvar_eda.ipynb
+    uniprot_eda.ipynb
+    joined_clinvar_uniprot_eda.ipynb
+    position_matching_eda.ipynb
+  modeling/
+    xgboost/
+      cv_xgboost.ipynb           # stage 1: nested CV evaluation
+      train_final_xgboost.ipynb  # stage 2: full-data CV tune → deploy model
+      infer_xgboost.ipynb        # score new rows (e.g. VUS)
 data/
   raw/          # gitignored
   processed/    # gitignored
