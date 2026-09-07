@@ -1,6 +1,6 @@
 """Gene-grouped CV folds and nested XGBoost cross-validation.
 
-Builds on ``holdout_train_eval`` feature matrices / fit helpers. Assigns each gene
+Builds on ``features`` (matrices, encoding, fit helpers). Assigns each gene
 to a fold, then runs nested CV: outer folds estimate generalization; inner CV on
 the remaining folds selects hyperparameters.
 
@@ -19,7 +19,7 @@ import pandas as pd
 from sklearn.metrics import average_precision_score
 from sklearn.model_selection import ParameterSampler
 
-from holdout_train_eval import (
+from features import (
     DEFAULT_SEED,
     FEATURE_COLUMNS,
     GROUP_COLUMN,

@@ -1,13 +1,15 @@
-"""Gene-grouped train/valid/test split and XGBoost holdout fit/eval.
+"""Shared feature matrices, encoding, thresholds, and optional holdout split.
 
 Reads data/processed/clinvar_uniprot_position_matched.parquet, keeps matched
-labelled variants (one row per VariationID), assigns each gene wholly to
-train/valid/test, and provides helpers to build matrices and fit XGBoost.
+labelled variants (one row per VariationID), and provides helpers to build
+model matrices (native categoricals for XGBoost; one-hot for sklearn) and fit.
 
-Writes:
+Optional CLI writes a gene-grouped train/valid/test split:
   data/processed/train.parquet
   data/processed/valid.parquet
   data/processed/test.parquet
+
+Honest KPIs come from ``cv_train_eval`` / ``cv_baselines``, not this split.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     average_precision_score,
     classification_report,
@@ -26,6 +30,8 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from xgboost import XGBClassifier
 
 project_root = Path(__file__).resolve().parents[1]
@@ -250,6 +256,67 @@ def align_categories_to_train(
             values = values.where(values.isin(cats), "__MISSING__")
             frame[col] = pd.Categorical(values, categories=cats)
     return (train, *others)
+
+
+def sklearn_input_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Feature frame for sklearn: numeric NaNs kept, bools as 0/1, cats as strings."""
+    X = df[FEATURE_COLUMNS].copy()
+    for col in NUMERIC_FEATURES:
+        X[col] = pd.to_numeric(X[col], errors="coerce")
+    for col in BOOLEAN_FEATURES:
+        X[col] = X[col].fillna(False).astype(int)
+    for col in CATEGORICAL_FEATURES:
+        X[col] = X[col].astype("string").fillna("__MISSING__")
+    return X
+
+
+def make_sklearn_preprocessor() -> ColumnTransformer:
+    """Median-impute numerics; one-hot cats fitted on train only (``handle_unknown=ignore``).
+
+    XGBoost does **not** use this path: it keeps pandas ``category`` columns and
+    ``enable_categorical=True``. Numerics are median-imputed and standardized
+    (needed for elastic-net; harmless for random forest).
+    """
+    try:
+        onehot = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    except TypeError:
+        onehot = OneHotEncoder(handle_unknown="ignore", sparse=False)
+    numeric = Pipeline(
+        steps=[
+            ("impute", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler()),
+        ]
+    )
+    return ColumnTransformer(
+        transformers=[
+            ("num", numeric, NUMERIC_FEATURES),
+            ("bool", "passthrough", BOOLEAN_FEATURES),
+            ("cat", onehot, CATEGORICAL_FEATURES),
+        ],
+        remainder="drop",
+    )
+
+
+def encode_for_sklearn(
+    train_df: pd.DataFrame,
+    *others: pd.DataFrame,
+) -> tuple[np.ndarray, tuple[np.ndarray, ...], np.ndarray, tuple[np.ndarray, ...], list[str]]:
+    """Fit one-hot / impute on ``train_df`` only; transform other frames.
+
+    Returns ``X_train, X_others, y_train, y_others, feature_names``.
+    """
+    preprocessor = make_sklearn_preprocessor()
+    X_train = preprocessor.fit_transform(sklearn_input_frame(train_df))
+    y_train = (train_df[TARGET_COLUMN] == "pathogenic").astype(int).to_numpy()
+    X_others = tuple(
+        preprocessor.transform(sklearn_input_frame(frame)) for frame in others
+    )
+    y_others = tuple(
+        (frame[TARGET_COLUMN] == "pathogenic").astype(int).to_numpy()
+        for frame in others
+    )
+    feature_names = [str(name) for name in preprocessor.get_feature_names_out()]
+    return X_train, X_others, y_train, y_others, feature_names
 
 
 def split_summary(df: pd.DataFrame, *, partition_col: str = "split") -> pd.DataFrame:

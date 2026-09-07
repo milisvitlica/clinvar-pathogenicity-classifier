@@ -14,8 +14,8 @@ ingest_*.py                         -> data/raw/
 clean_*.py                          -> data/processed/
 join_clinvar_uniprot.py             -> clinvar_uniprot_joined.parquet
 position_matching_clinvar_uniprot.py -> clinvar_uniprot_position_matched.parquet
-holdout_train_eval / cv_train_eval  -> splits, nested CV metrics
-final_model.py                      -> deployable model + threshold
+features.py / cv_train_eval          -> matrices, splits, nested CV metrics
+final_catboost.py                    -> deployable CatBoost model + threshold
 ```
 
 ## Getting started
@@ -66,13 +66,17 @@ identity fields such as Chromosome, Length, and free-text domain notes are
 **excluded**). Includes protein position, distance to closest UniProt feature,
 overlap flags (`in_domain`, …), `closest_feature_type`, and alleles.
 
+XGBoost and CatBoost consume categoricals natively. Elastic-net logistic and
+random forest use `encode_for_sklearn()`: median-impute + scale numerics, one-hot
+cats fitted on the training frame only (`handle_unknown=ignore`).
+
 ### Two-stage protocol
 
 | Stage | What | Purpose |
 |-------|------|---------|
 | **1. Nested gene CV** | Outer test folds + inner tune | **Honest KPIs** on held-out genes |
 | **2. Single-loop gene CV** on all labelled data | Pick one `θ*`, `n_estimators*`, threshold | **Deploy hyperparameters** |
-| then | Fit on **all** labelled rows | Ship `models/xgb_final_*.json` |
+| then | Fit on **all** labelled rows | Ship `models/catboost_final_*.cbm` |
 
 Nested CV produces a *different* hyperparam set per outer fold — it is for
 evaluation, not a single production config. Stage 2 re-tunes once on the full
@@ -84,10 +88,10 @@ not report it as model performance.
 
 ```bash
 python src/cv_train_eval.py          # write data/processed/cv_folds.parquet
-# then open notebooks/modeling/xgboost/cv_xgboost.ipynb
+# then open notebooks/modeling/cv/cv_xgboost.ipynb
 ```
 
-Gene-grouped **nested CV** (`src/cv_train_eval.py` / `notebooks/modeling/xgboost/cv_xgboost.ipynb`):
+Gene-grouped **nested CV** (`src/cv_train_eval.py` / `notebooks/modeling/cv/cv_xgboost.ipynb`):
 
 - Outer folds → test metrics (report these)
 - Inner CV (on the outer-train pool only) → hyperparameters, tree budget
@@ -106,7 +110,7 @@ Do not use pooled OOF ROC as the headline number (fold score scales differ).
 ### Holdout baseline (optional)
 
 ```bash
-python src/holdout_train_eval.py     # train/valid/test parquets
+python src/features.py               # optional train/valid/test parquets
 ```
 
 ### Final classifier (single-loop CV tune → fit all)
@@ -115,24 +119,27 @@ After nested CV, choose deploy settings with a **standard (single-loop) gene CV*
 on the full labelled table, then fit on every labelled row:
 
 ```bash
-python src/final_model.py
-# or notebooks/modeling/xgboost/train_final_xgboost.ipynb
+python src/final_catboost.py
+# or notebooks/modeling/final/train_final_catboost.ipynb
 ```
 
 Writes:
 
-- `models/xgb_final_pathogenicity.json` — XGBoost model
-- `models/xgb_final_pathogenicity_meta.json` — threshold, params, feature schema,
+- `models/catboost_final_pathogenicity.cbm` — CatBoost model
+- `models/catboost_final_pathogenicity_meta.json` — threshold, params, feature schema,
   `tune_inner_mean_roc_auc` (diagnostic only)
+
+XGBoost stage-2 notebooks remain under `notebooks/modeling/final/deprecated/`
+(`python src/final_model.py`).
 
 ### Inference
 
 ```bash
-# notebooks/modeling/xgboost/infer_xgboost.ipynb
+# notebooks/modeling/final/infer_catboost.ipynb
 ```
 
 Scores **ClinVar VUS** from `clinvar_uniprot_position_matched_vus.parquet` with the
-saved model + Youden threshold (writes `data/processed/vus_inference_predictions.parquet`).
+saved CatBoost model + Youden threshold (writes `data/processed/vus_inference_predictions.parquet`).
 API: `predict_pathogenicity()` / `prepare_inference_frame()` in `src/`.
 
 ## Notebooks
@@ -144,11 +151,19 @@ API: `predict_pathogenicity()` / `prepare_inference_frame()` in `src/`.
 - `joined_clinvar_uniprot_eda.ipynb`
 - `position_matching_eda.ipynb`
 
-### Modeling (`notebooks/modeling/xgboost/`)
+### Modeling (`notebooks/modeling/`)
 
-- `cv_xgboost.ipynb` — stage 1: nested CV evaluation
-- `train_final_xgboost.ipynb` — stage 2: full-data CV tune → deploy model
-- `infer_xgboost.ipynb` — score new rows (e.g. VUS)
+Stage 1 lives in `cv/` (compare algorithms on the same gene folds).
+The winner is the only model that goes to `final/` for full-data train + inference.
+
+- `cv/cv_xgboost.ipynb` — nested CV (XGBoost reference)
+- `cv/cv_logistic.ipynb` — elastic-net logistic (one-hot cats)
+- `cv/cv_random_forest.ipynb` — random forest (one-hot cats)
+- `cv/cv_catboost.ipynb` — CatBoost (native categoricals)
+- `cv/conclusions.md` — nested-CV comparison → **CatBoost** for inference
+- `final/train_final_catboost.ipynb` — full-data CV tune → deploy model
+- `final/infer_catboost.ipynb` — score new rows (e.g. VUS)
+- `final/deprecated/` — previous XGBoost train / infer notebooks
 
 ## Project layout
 
@@ -158,9 +173,11 @@ src/
   clean_clinvar.py / clean_uniprot.py
   join_clinvar_uniprot.py
   position_matching_clinvar_uniprot.py
-  holdout_train_eval.py      # features, holdout split, fit helpers
+  features.py                # matrices, encoding, fit helpers; optional holdout split
   cv_train_eval.py           # gene CV folds + nested CV (honest KPIs)
-  final_model.py             # single-loop full-data tune + fit all + inference
+  cv_baselines.py            # nested CV for logistic / RF / CatBoost
+  final_catboost.py          # single-loop full-data tune + fit all + inference
+  final_model.py             # XGBoost stage 2 (kept; notebooks deprecated)
 notebooks/
   eda/
     clinvar_eda.ipynb
@@ -168,10 +185,16 @@ notebooks/
     joined_clinvar_uniprot_eda.ipynb
     position_matching_eda.ipynb
   modeling/
-    xgboost/
-      cv_xgboost.ipynb           # stage 1: nested CV evaluation
-      train_final_xgboost.ipynb  # stage 2: full-data CV tune → deploy model
-      infer_xgboost.ipynb        # score new rows (e.g. VUS)
+    cv/
+      cv_xgboost.ipynb           # stage 1: nested CV (XGBoost)
+      cv_logistic.ipynb          # elastic-net logistic
+      cv_random_forest.ipynb     # random forest
+      cv_catboost.ipynb          # CatBoost
+      conclusions.md             # pick winner for inference (CatBoost)
+    final/                       # winner only (CatBoost)
+      train_final_catboost.ipynb # stage 2: full-data CV tune → deploy model
+      infer_catboost.ipynb       # score new rows (e.g. VUS)
+      deprecated/                # previous XGBoost stage-2 notebooks
 data/
   raw/          # gitignored
   processed/    # gitignored

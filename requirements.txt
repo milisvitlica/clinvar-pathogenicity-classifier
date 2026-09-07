@@ -4,6 +4,7 @@ requests
 numpy
 scikit-learn
 xgboost
+catboost
 matplotlib
 seaborn
 jupyterlab

@@ -1,18 +1,19 @@
-"""Train a deployable final XGBoost classifier and run inference.
+"""Train a deployable final CatBoost classifier and run inference.
 
 Two-stage protocol:
-  1. Nested gene CV (`cv_train_eval.run_nested_cv` / ``notebooks/cv_xgboost.ipynb``)
-     → honest outer-fold KPIs. Each outer fold has its own hyperparams.
-  2. ``train_final_classifier`` runs a **single-loop** gene CV on the *full*
-     labelled table (`nested_tune`) to pick one ``θ*``, ``n_estimators*``, and
-     Youden threshold, then fits on **all** labelled rows (no holdout).
+  1. Nested gene CV (`cv_baselines.run_nested_cv_baseline("catboost")` /
+     ``notebooks/modeling/cv/cv_catboost.ipynb``) → honest outer-fold KPIs.
+  2. ``train_final_catboost`` runs a **single-loop** gene CV on the *full*
+     labelled table (`nested_tune_baseline`) to pick one ``θ*``, ``n_estimators*``,
+     and Youden threshold, then fits on **all** labelled rows (no holdout).
 
 The tune's inner mean ROC-AUC is a selection diagnostic only — do not report it
-as model performance.
+as model performance. Nested-CV comparison chose CatBoost for deploy
+(``notebooks/modeling/cv/conclusions.md``).
 
 Artifacts (under ``models/`` by default):
-  xgb_final_pathogenicity.json       — XGBoost model
-  xgb_final_pathogenicity_meta.json  — threshold, params, feature schema, categories
+  catboost_final_pathogenicity.cbm        — CatBoost model
+  catboost_final_pathogenicity_meta.json  — threshold, params, feature schema
 """
 
 from __future__ import annotations
@@ -23,15 +24,14 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from xgboost import XGBClassifier
 
-from cv_train_eval import (
-    DEFAULT_N_FOLDS,
-    DEFAULT_N_TUNING_TRIALS,
-    PARAM_DISTRIBUTIONS,
-    assign_cv_folds,
-    nested_tune,
+from cv_baselines import (
+    CATBOOST_PARAM_DISTRIBUTIONS,
+    fit_catboost,
+    nested_tune_baseline,
+    prepare_catboost_matrix,
 )
+from cv_train_eval import DEFAULT_N_FOLDS, DEFAULT_N_TUNING_TRIALS, assign_cv_folds
 from features import (
     CATEGORICAL_FEATURES,
     DEFAULT_SEED,
@@ -40,17 +40,13 @@ from features import (
     ID_COLUMN,
     POSITION_MATCHED_IN,
     TARGET_COLUMN,
-    build_feature_matrix,
-    data_processed,
-    make_xgb_model,
     prepare_modeling_frame,
     project_root,
-    scale_pos_weight_from_labels,
 )
 
 MODELS_DIR = project_root / "models"
-DEFAULT_MODEL_PATH = MODELS_DIR / "xgb_final_pathogenicity.json"
-DEFAULT_META_PATH = MODELS_DIR / "xgb_final_pathogenicity_meta.json"
+DEFAULT_MODEL_PATH = MODELS_DIR / "catboost_final_pathogenicity.cbm"
+DEFAULT_META_PATH = MODELS_DIR / "catboost_final_pathogenicity_meta.json"
 
 
 def _ensure_relative_position(df: pd.DataFrame) -> pd.DataFrame:
@@ -64,22 +60,27 @@ def _ensure_relative_position(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _matrix_with_saved_categories(
-    df: pd.DataFrame,
-    categorical_levels: dict[str, list[str]],
-) -> pd.DataFrame:
-    """Build the feature matrix and force category levels from training meta."""
-    X, _ = build_feature_matrix(_ensure_relative_position(df))
-    for col, cats in categorical_levels.items():
+def _jsonable(value):
+    if isinstance(value, (np.floating, float)):
+        return float(value)
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    return value
+
+
+def _matrix_with_saved_categories(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
+    """Build the CatBoost frame and force category levels from training meta."""
+    X, _, _ = prepare_catboost_matrix(_ensure_relative_position(df))
+    for col, cats in meta.get("categorical_levels", {}).items():
         if col not in X.columns:
             continue
-        values = X[col].astype("string")
+        values = X[col].astype("string").fillna("__MISSING__")
         values = values.where(values.isin(cats), "__MISSING__")
-        X[col] = pd.Categorical(values, categories=cats)
-    return X
+        X[col] = values
+    return X[list(meta["feature_columns"])]
 
 
-def train_final_classifier(
+def train_final_catboost(
     *,
     input_path: Path = POSITION_MATCHED_IN,
     n_folds: int = DEFAULT_N_FOLDS,
@@ -92,46 +93,54 @@ def train_final_classifier(
     verbose: bool = True,
 ) -> dict:
     """Tune on full labelled data (gene CV), fit on all rows, persist model + meta."""
+    from catboost import CatBoostClassifier
+
     raw = pd.read_parquet(input_path)
     modeling = prepare_modeling_frame(raw)
     folded = assign_cv_folds(modeling, n_folds=n_folds, seed=seed)
 
-    best_params, best_inner_auc, n_estimators, threshold, trials = nested_tune(
+    best_params, best_inner_auc, n_estimators, threshold, trials = nested_tune_baseline(
         folded,
+        fit_catboost,
+        param_distributions or CATBOOST_PARAM_DISTRIBUTIONS,
         n_trials=n_trials,
         seed=seed,
-        param_distributions=param_distributions or PARAM_DISTRIBUTIONS,
         threshold_method=threshold_method,
     )
+    n_estimators = max(1, int(n_estimators or 1))
 
-    X, y = build_feature_matrix(folded)
+    X, y, cat_idx = prepare_catboost_matrix(folded)
     params = dict(best_params)
-    if "scale_pos_weight" not in params:
-        params["scale_pos_weight"] = scale_pos_weight_from_labels(y)
-
-    model = make_xgb_model(
-        seed=seed,
-        n_estimators=n_estimators,
-        early_stopping_rounds=None,
-        **params,
+    model = CatBoostClassifier(
+        loss_function="Logloss",
+        eval_metric="AUC",
+        auto_class_weights="Balanced",
+        random_seed=seed,
+        thread_count=4,
+        verbose=False,
+        iterations=n_estimators,
+        use_best_model=False,
+        bootstrap_type="Bernoulli",
+        depth=int(params["depth"]),
+        learning_rate=float(params["learning_rate"]),
+        l2_leaf_reg=float(params["l2_leaf_reg"]),
+        subsample=float(params["subsample"]),
     )
-    model.fit(X, y, verbose=False)
+    model.fit(X, y, cat_features=cat_idx)
 
     categorical_levels = {
-        col: [str(c) for c in X[col].cat.categories] for col in CATEGORICAL_FEATURES
+        col: sorted({str(v) for v in X[col].dropna().unique()})
+        for col in CATEGORICAL_FEATURES
     }
+    for levels in categorical_levels.values():
+        if "__MISSING__" not in levels:
+            levels.append("__MISSING__")
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    model.save_model(model_path)
-
-    def _jsonable(value):
-        if isinstance(value, (np.floating, float)):
-            return float(value)
-        if isinstance(value, (np.integer, int)):
-            return int(value)
-        return value
+    model.save_model(str(model_path))
 
     meta = {
+        "estimator": "catboost",
         "model_path": str(model_path),
         "feature_columns": list(FEATURE_COLUMNS),
         "categorical_features": list(CATEGORICAL_FEATURES),
@@ -169,13 +178,15 @@ def train_final_classifier(
     }
 
 
-def load_final_classifier(
+def load_final_catboost(
     model_path: Path = DEFAULT_MODEL_PATH,
     meta_path: Path = DEFAULT_META_PATH,
-) -> tuple[XGBClassifier, dict]:
-    """Load persisted XGBoost model and metadata."""
+):
+    """Load persisted CatBoost model and metadata."""
+    from catboost import CatBoostClassifier
+
     meta = json.loads(Path(meta_path).read_text())
-    model = XGBClassifier()
+    model = CatBoostClassifier()
     model.load_model(str(model_path))
     return model, meta
 
@@ -183,23 +194,16 @@ def load_final_classifier(
 def predict_pathogenicity(
     df: pd.DataFrame,
     *,
-    model: XGBClassifier | None = None,
+    model=None,
     meta: dict | None = None,
     model_path: Path = DEFAULT_MODEL_PATH,
     meta_path: Path = DEFAULT_META_PATH,
 ) -> pd.DataFrame:
-    """Score rows with the final classifier; returns probabilities and hard labels.
-
-    ``df`` should look like the position-matched / modeling table (at least the
-    feature columns, or raw fields needed to build them including Length for
-    relative position).
-    """
+    """Score rows with the final CatBoost classifier; probabilities and hard labels."""
     if model is None or meta is None:
-        model, meta = load_final_classifier(model_path, meta_path)
+        model, meta = load_final_catboost(model_path, meta_path)
 
-    X = _matrix_with_saved_categories(df, meta["categorical_levels"])
-    # Column order must match training.
-    X = X[meta["feature_columns"]]
+    X = _matrix_with_saved_categories(df, meta)
     proba = model.predict_proba(X)[:, 1]
     threshold = float(meta["threshold"])
     pred = (proba >= threshold).astype(int)
@@ -233,7 +237,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--meta-path", type=Path, default=DEFAULT_META_PATH)
     args = parser.parse_args(argv)
 
-    train_final_classifier(
+    train_final_catboost(
         input_path=args.input,
         n_folds=args.n_folds,
         n_trials=args.n_trials,
