@@ -23,7 +23,6 @@ from features import (
     DEFAULT_SEED,
     FEATURE_COLUMNS,
     GROUP_COLUMN,
-    POSITION_MATCHED_IN,
     TARGET_COLUMN,
     _keep_columns,
     classification_metrics_at_threshold,
@@ -33,6 +32,7 @@ from features import (
     gene_stats,
     pick_threshold,
     prepare_modeling_frame,
+    resolve_position_matched_path,
     split_summary,
 )
 
@@ -132,11 +132,12 @@ def iter_cv_folds(
 
 def run_cv_folds(
     *,
-    input_path: Path = POSITION_MATCHED_IN,
+    input_path: Path | None = None,
     n_folds: int = DEFAULT_N_FOLDS,
     seed: int = DEFAULT_SEED,
 ) -> pd.DataFrame:
     """Prepare, assign gene-grouped CV folds, write parquet, and return the frame."""
+    input_path = input_path or resolve_position_matched_path()
     raw = pd.read_parquet(input_path)
     modeling = prepare_modeling_frame(raw)
     folded = assign_cv_folds(modeling, n_folds=n_folds, seed=seed)
@@ -365,7 +366,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     folded = run_cv_folds(n_folds=args.n_folds, seed=args.seed)
-    print("Read:", POSITION_MATCHED_IN)
+    print("Read:", resolve_position_matched_path())
     print("Wrote:", CV_FOLDS_OUT)
     print(split_summary(folded, partition_col="fold").to_string(index=False))
     gene_folds = folded.groupby(GROUP_COLUMN)["fold"].nunique()

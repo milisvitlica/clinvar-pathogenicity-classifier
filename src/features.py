@@ -1,8 +1,9 @@
 """Shared feature matrices, encoding, thresholds, and optional holdout split.
 
-Reads data/processed/clinvar_uniprot_position_matched.parquet, keeps matched
-labelled variants (one row per VariationID), and provides helpers to build
-model matrices (native categoricals for XGBoost; one-hot for sklearn) and fit.
+Reads data/processed/clinvar_uniprot_gnomad_position_matched.parquet (falls
+back to the UniProt-only position-matched table), keeps matched labelled
+variants (one row per VariationID), and provides helpers to build model
+matrices (native categoricals for XGBoost; one-hot for sklearn) and fit.
 
 Optional CLI writes a gene-grouped train/valid/test split:
   data/processed/train.parquet
@@ -37,8 +38,10 @@ from xgboost import XGBClassifier
 project_root = Path(__file__).resolve().parents[1]
 data_processed = project_root / "data/processed"
 
-POSITION_MATCHED_IN = data_processed / "clinvar_uniprot_position_matched.parquet"
-POSITION_MATCHED_VUS_IN = data_processed / "clinvar_uniprot_position_matched_vus.parquet"
+POSITION_MATCHED_IN = data_processed / "clinvar_uniprot_gnomad_position_matched.parquet"
+POSITION_MATCHED_FALLBACK_IN = data_processed / "clinvar_uniprot_position_matched.parquet"
+POSITION_MATCHED_VUS_IN = data_processed / "clinvar_uniprot_gnomad_position_matched_vus.parquet"
+POSITION_MATCHED_VUS_FALLBACK_IN = data_processed / "clinvar_uniprot_position_matched_vus.parquet"
 TRAIN_OUT = data_processed / "train.parquet"
 VALID_OUT = data_processed / "valid.parquet"
 TEST_OUT = data_processed / "test.parquet"
@@ -49,10 +52,16 @@ DEFAULT_SEED = 42
 # Gene-proxy / high-cardinality identity-like columns are omitted: under
 # gene-grouped evaluation they mostly memorize training genes rather than
 # transferring biology (Chromosome/OriginSimple/Length; free-text domain notes).
+# log10(AF) rather than raw AF: frequencies are heavily right-skewed.
+# gnomAD AN is omitted — it mostly tracks gene coverage / panel membership
+# and would act as a gene proxy under gene-grouped evaluation.
 NUMERIC_FEATURES = [
     "protein_position",
     "relative_protein_position",
     "distance_to_closest_feature",
+    "log10_gnomad_af",
+    "log10_gnomad_af_popmax",
+    "log1p_gnomad_nhomalt",
 ]
 
 BOOLEAN_FEATURES = [
@@ -66,13 +75,18 @@ BOOLEAN_FEATURES = [
     "in_mod_res",
     "in_functional_site",
     "in_any_feature",
+    "in_gnomad",
+    "gnomad_filter_pass",
 ]
 
 CATEGORICAL_FEATURES = [
     "closest_feature_type",
     "ReferenceAlleleVCF",
     "AlternateAlleleVCF",
+    "gnomad_af_bin",
 ]
+
+GNOMAD_AF_EPS = 1e-6
 
 FEATURE_COLUMNS = NUMERIC_FEATURES + BOOLEAN_FEATURES + CATEGORICAL_FEATURES
 TARGET_COLUMN = "label"
@@ -87,6 +101,9 @@ META_COLUMNS = [
     "GeneSymbol",
     "ClinicalSignificance",
     "match_type",
+    "gnomad_af",
+    "gnomad_af_popmax",
+    "gnomad_nhomalt",
 ]
 
 DEFAULT_XGB_PARAMS = {
@@ -120,12 +137,89 @@ def _add_relative_protein_position(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def _gnomad_af_bin(in_gnomad: bool, af: float) -> str:
+    """ACMG-inspired AF bins (BA1 ≥ 5%, BS1 ≥ 1%; absence is PM2-like)."""
+    if not in_gnomad:
+        return "absent"
+    if af >= 0.05:
+        return "common_ba1"
+    if af >= 0.01:
+        return "common_bs1"
+    if af >= 0.001:
+        return "low_freq"
+    if af >= 1e-4:
+        return "rare"
+    if af >= 1e-5:
+        return "ultra_rare"
+    return "singleton_or_private"
+
+
+def add_gnomad_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Derive log-AF / AF-bin columns; absent gnomAD sites are AF = 0 (not median-imputed).
+
+    ClinVar labels already use population frequency (ACMG BA1/BS1/PM2), so these
+    features are partly circular with the target — strong metrics are expected.
+    """
+    frame = frame.copy()
+    if "in_gnomad" not in frame.columns:
+        print(
+            "Warning: gnomAD columns missing; filling absent-frequency defaults. "
+            "Run python src/join_clinvar_gnomad.py"
+        )
+        frame["in_gnomad"] = False
+        frame["gnomad_af"] = pd.NA
+        frame["gnomad_af_popmax"] = pd.NA
+        frame["gnomad_nhomalt"] = pd.NA
+        frame["gnomad_filter_pass"] = False
+
+    in_g = frame["in_gnomad"].fillna(False).astype(bool)
+    if "gnomad_af" not in frame.columns:
+        frame["gnomad_af"] = pd.NA
+    if "gnomad_af_popmax" not in frame.columns:
+        frame["gnomad_af_popmax"] = pd.NA
+    if "gnomad_nhomalt" not in frame.columns:
+        frame["gnomad_nhomalt"] = pd.NA
+    if "gnomad_filter_pass" not in frame.columns:
+        frame["gnomad_filter_pass"] = False
+
+    af = pd.to_numeric(frame["gnomad_af"], errors="coerce")
+    af_popmax = pd.to_numeric(frame["gnomad_af_popmax"], errors="coerce")
+    nhom = pd.to_numeric(frame["gnomad_nhomalt"], errors="coerce")
+
+    af = af.where(in_g, 0.0).fillna(0.0)
+    af_popmax = af_popmax.where(in_g, 0.0).fillna(af)
+    nhom = nhom.where(in_g, 0.0).fillna(0.0)
+
+    frame["in_gnomad"] = in_g
+    frame["gnomad_af"] = af
+    frame["gnomad_af_popmax"] = af_popmax
+    frame["gnomad_nhomalt"] = nhom
+    frame["log10_gnomad_af"] = np.log10(af + GNOMAD_AF_EPS)
+    frame["log10_gnomad_af_popmax"] = np.log10(af_popmax + GNOMAD_AF_EPS)
+    frame["log1p_gnomad_nhomalt"] = np.log1p(nhom)
+    frame["gnomad_filter_pass"] = frame["gnomad_filter_pass"].fillna(False).astype(bool)
+    frame["gnomad_af_bin"] = [
+        _gnomad_af_bin(flag, float(freq)) for flag, freq in zip(in_g, af)
+    ]
+    return frame
+
+
+def resolve_position_matched_path(*, vus: bool = False) -> Path:
+    """Prefer the gnomAD-joined table; fall back to UniProt-only position matching."""
+    primary = POSITION_MATCHED_VUS_IN if vus else POSITION_MATCHED_IN
+    fallback = POSITION_MATCHED_VUS_FALLBACK_IN if vus else POSITION_MATCHED_FALLBACK_IN
+    if primary.exists():
+        return primary
+    return fallback
+
+
 def prepare_modeling_frame(df: pd.DataFrame) -> pd.DataFrame:
     """Filter to matched labelled variants and deduplicate to one row per VariationID."""
     frame = df[df["match_type"] == "both"].copy()
     frame = frame[frame[TARGET_COLUMN].isin(["pathogenic", "benign"])].copy()
     frame = _dedupe_matched_variants(frame)
     frame = _add_relative_protein_position(frame)
+    frame = add_gnomad_features(frame)
 
     if frame[GROUP_COLUMN].isna().any():
         raise ValueError("Modeling rows are missing gene labels needed for the group split.")
@@ -150,6 +244,7 @@ def prepare_inference_frame(
         raise ValueError("No matched variants available for inference.")
     frame = _dedupe_matched_variants(frame)
     frame = _add_relative_protein_position(frame)
+    frame = add_gnomad_features(frame)
 
     if frame[GROUP_COLUMN].isna().any():
         raise ValueError("Inference rows are missing gene labels.")
@@ -351,11 +446,12 @@ def _keep_columns(*extra: str) -> list[str]:
 
 def run_split(
     *,
-    input_path: Path = POSITION_MATCHED_IN,
+    input_path: Path | None = None,
     ratios: tuple[float, float, float] = DEFAULT_RATIOS,
     seed: int = DEFAULT_SEED,
 ) -> dict[str, pd.DataFrame]:
     """Prepare, holdout-split, write parquets, and return the three frames."""
+    input_path = input_path or resolve_position_matched_path()
     raw = pd.read_parquet(input_path)
     modeling = prepare_modeling_frame(raw)
     split_df = split_by_gene(modeling, ratios=ratios, seed=seed)
@@ -620,7 +716,7 @@ def main(argv: list[str] | None = None) -> None:
 
     frames = run_split(seed=args.seed)
     combined = pd.concat(frames.values(), ignore_index=True)
-    print("Read:", POSITION_MATCHED_IN)
+    print("Read:", resolve_position_matched_path())
     print("Wrote:", TRAIN_OUT)
     print("Wrote:", VALID_OUT)
     print("Wrote:", TEST_OUT)

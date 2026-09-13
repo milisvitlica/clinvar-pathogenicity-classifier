@@ -38,10 +38,11 @@ from features import (
     FEATURE_COLUMNS,
     GROUP_COLUMN,
     ID_COLUMN,
-    POSITION_MATCHED_IN,
     TARGET_COLUMN,
+    add_gnomad_features,
     prepare_modeling_frame,
     project_root,
+    resolve_position_matched_path,
 )
 
 MODELS_DIR = project_root / "models"
@@ -57,7 +58,7 @@ def _ensure_relative_position(df: pd.DataFrame) -> pd.DataFrame:
             length = pd.to_numeric(out["Length"], errors="coerce")
             pos = pd.to_numeric(out["protein_position"], errors="coerce")
             out["relative_protein_position"] = (pos / length).where(length > 0)
-    return out
+    return add_gnomad_features(out)
 
 
 def _jsonable(value):
@@ -82,7 +83,7 @@ def _matrix_with_saved_categories(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
 
 def train_final_catboost(
     *,
-    input_path: Path = POSITION_MATCHED_IN,
+    input_path: Path | None = None,
     n_folds: int = DEFAULT_N_FOLDS,
     n_trials: int = DEFAULT_N_TUNING_TRIALS,
     seed: int = DEFAULT_SEED,
@@ -95,7 +96,7 @@ def train_final_catboost(
     """Tune on full labelled data (gene CV), fit on all rows, persist model + meta."""
     from catboost import CatBoostClassifier
 
-    raw = pd.read_parquet(input_path)
+    raw = pd.read_parquet(input_path or resolve_position_matched_path())
     modeling = prepare_modeling_frame(raw)
     folded = assign_cv_folds(modeling, n_folds=n_folds, seed=seed)
 
@@ -232,7 +233,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--n-trials", type=int, default=DEFAULT_N_TUNING_TRIALS)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--threshold-method", choices=["f1", "youden"], default="youden")
-    parser.add_argument("--input", type=Path, default=POSITION_MATCHED_IN)
+    parser.add_argument("--input", type=Path, default=None)
     parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH)
     parser.add_argument("--meta-path", type=Path, default=DEFAULT_META_PATH)
     args = parser.parse_args(argv)
