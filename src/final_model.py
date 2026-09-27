@@ -39,7 +39,6 @@ from features import (
     GROUP_COLUMN,
     ID_COLUMN,
     TARGET_COLUMN,
-    add_gnomad_features,
     build_feature_matrix,
     data_processed,
     make_xgb_model,
@@ -62,7 +61,7 @@ def _ensure_relative_position(df: pd.DataFrame) -> pd.DataFrame:
             length = pd.to_numeric(out["Length"], errors="coerce")
             pos = pd.to_numeric(out["protein_position"], errors="coerce")
             out["relative_protein_position"] = (pos / length).where(length > 0)
-    return add_gnomad_features(out)
+    return out
 
 
 def _matrix_with_saved_categories(
@@ -95,6 +94,7 @@ def train_final_classifier(
     """Tune on full labelled data (gene CV), fit on all rows, persist model + meta."""
     raw = pd.read_parquet(input_path or resolve_position_matched_path())
     modeling = prepare_modeling_frame(raw)
+    # Single-loop gene CV on ALL labelled rows (not nested): pick one θ* for deploy.
     folded = assign_cv_folds(modeling, n_folds=n_folds, seed=seed)
 
     best_params, best_inner_auc, n_estimators, threshold, trials = nested_tune(

@@ -35,7 +35,7 @@ from features import (
 
 LOGISTIC_PARAM_DISTRIBUTIONS = {
     "C": [0.01, 0.1, 1.0, 10.0],
-    "l1_ratio": [0.0, 0.5, 1.0],
+    "l1_ratio": [0.0, 0.5, 1.0],  # 0 = ridge, 1 = lasso
 }
 
 RF_PARAM_DISTRIBUTIONS = {
@@ -77,6 +77,7 @@ def fit_logistic(
     seed: int = DEFAULT_SEED,
 ) -> dict:
     """Elastic-net logistic; one-hot cats. Fits on train+valid (no early stopping)."""
+    # Concatenate train+valid: no native early stopping, so do not waste a gene fold.
     fit_df = _concat_frames(train_df, valid_df)
     X_fit, (X_test,), y_fit, (y_test,), names = encode_for_sklearn(fit_df, test_df)
     model = LogisticRegression(

@@ -33,6 +33,7 @@ GENE_KEY = "gene_key"
 
 
 def _first_gene(gene_names) -> str:
+    # UniProt "Gene Names" is space-delimited; the first token is the primary symbol.
     if pd.isna(gene_names):
         return ""
     tokens = str(gene_names).split()
@@ -93,6 +94,7 @@ def build_joined_dataframe(
 
     has_uniprot = merged["Entry"].notna()
     has_clinvar = merged["VariationID"].notna()
+    # both = training rows; the *_only rows exist for EDA coverage checks.
     merged["match_type"] = "clinvar_only"
     merged.loc[has_uniprot & ~has_clinvar, "match_type"] = "uniprot_only"
     merged.loc[has_uniprot & has_clinvar, "match_type"] = "both"

@@ -21,10 +21,12 @@ UNIPROT_CLEAN = data_processed / "uniprot_clean.parquet"
 def main() -> None:
     df = pd.read_parquet(UNIPROT_RAW)
 
+    # UniProt prefixes every comment blob; strip so EDA/search is readable.
     df["Function [CC]"] = df["Function [CC]"].str.replace("FUNCTION: ", "")
     df["Involvement in disease"] = df["Involvement in disease"].str.replace("DISEASE: ", "")
     df["Tissue specificity"] = df["Tissue specificity"].str.replace("TISSUE SPECIFICITY: ", "")
 
+    # Disease-associated proteins only — the ClinVar set is Mendelian-gene heavy.
     df = df[df["Involvement in disease"].notna()].copy()
 
     data_processed.mkdir(parents=True, exist_ok=True)

@@ -25,6 +25,7 @@ POSITION_MATCHED_OUT = data_processed / "clinvar_uniprot_position_matched.parque
 POSITION_MATCHED_VUS_OUT = data_processed / "clinvar_uniprot_position_matched_vus.parquet"
 
 FEATURE_COLUMNS: dict[str, str] = {
+    # dataframe column -> UniProt FT prefix used in the free-text blob
     "Domain [FT]": "DOMAIN",
     "Region": "REGION",
     "Zinc finger": "ZN_FING",
@@ -64,7 +65,7 @@ CONTEXT_COLUMNS = [
     "distance_to_closest_feature",
 ]
 
-PROTEIN_HGVS_RE = re.compile(r"p\.[A-Za-z]{3}(\d+)")
+PROTEIN_HGVS_RE = re.compile(r"p\.[A-Za-z]{3}(\d+)")  # e.g. p.Arg1443Gly -> 1443
 
 
 def extract_protein_position(name_field) -> int | None:
@@ -173,6 +174,7 @@ def get_protein_context(
 
     closest = min(
         features,
+        # Tie-break: nearer wins, then more "functional" UniProt type (active site > domain).
         key=lambda feat: (
             feature_distance(pos, feat),
             FEATURE_TYPE_PRIORITY.get(feat["feature_type"], 99),
@@ -234,6 +236,7 @@ def enrich_joined_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df["protein_position"] = df["Name"].map(extract_protein_position).astype("Int64")
     df["has_protein_position"] = df["protein_position"].notna()
 
+    # One context dict per row; concat as columns (in_domain, closest_feature_type, …).
     context = df.apply(
         lambda row: get_protein_context(row["Entry"], row["protein_position"], features_by_entry),
         axis=1,

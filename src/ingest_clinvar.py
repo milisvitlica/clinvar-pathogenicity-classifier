@@ -1,10 +1,15 @@
-"""Download ClinVar variant summary and write data/raw/clinvar_reliable_grch38.parquet."""
+"""Download ClinVar variant summary and write data/raw/clinvar_reliable_grch38.parquet.
+
+Step 1 of the pipeline. Streams NCBI's full variant_summary (~millions of rows)
+and keeps only GRCh38 + expert-reviewed records. Labels/SNV filters come later
+in clean_clinvar.py (mixing hg19/hg38 coordinates would break gnomAD joins).
+"""
 
 from pathlib import Path
 
 import pandas as pd
 
-project_root = Path(__file__).resolve().parents[1]
+project_root = Path(__file__).resolve().parents[1]  # src/ -> repo root
 data_raw = project_root / "data/raw"
 CLINVAR_PARQUET = data_raw / "clinvar_reliable_grch38.parquet"
 CLINVAR_URL = "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/variant_summary.txt.gz"
@@ -25,12 +30,15 @@ dtype_map = {
     "PhenotypeList": "string", "PhenotypeIDS": "string",
     "Assembly": "category", "HGNC_ID": "string", "NumberSubmitters": "Int16",
 }
+# ClinGen expert panels / practice guidelines only. Broader review statuses
+# explode the table and mix single-submitter calls into the training labels.
 allowed_review = {
     "practice guideline",
     "reviewed by expert panel",
-    # "criteria provided, multiple submitters, no conflicts", # too many...
+    # "criteria provided, multiple submitters, no conflicts",
 }
 
+# File is too large to load at once; filter each 100k-row chunk, then concat.
 chunks = []
 for chunk in pd.read_csv(
     CLINVAR_URL, sep="\t", compression="gzip", usecols=columns,

@@ -75,6 +75,7 @@ def assign_cv_folds(
     assignment: dict[str, int] = {}
 
     for row in stats.itertuples(index=False):
+        # Greedy: put the next gene in the fold farthest below its size / path target.
         deficits = target - counts
         path_deficits = path_target - path_counts
         fold = int(np.lexsort((-path_deficits, -deficits))[0])
@@ -117,6 +118,7 @@ def iter_cv_folds(
             train_mask = df["fold"] != test_fold
             valid_df = df.iloc[0:0].copy()
         else:
+            # Valid is a different gene-fold than test so early stopping is not leaked.
             valid_fold = (test_fold + valid_fold_offset) % n_folds
             train_mask = ~df["fold"].isin([test_fold, valid_fold])
             valid_df = df[df["fold"] == valid_fold].reset_index(drop=True)

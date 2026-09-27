@@ -23,15 +23,18 @@ CLINVAR_RAW = data_raw / "clinvar_reliable_grch38.parquet"
 CLINVAR_CLEAN = data_processed / "clinvar_clean.parquet"
 CLINVAR_CLEAN_VUS = data_processed / "clinvar_clean_vus.parquet"
 
+# Collapse ClinVar's graded terms into a binary training target.
+# "Likely *" stays in the same bucket as the definite call (standard for this task).
 BENIGN = {"Likely benign", "Benign", "Benign/Likely benign"}
 PATHOGENIC = {"Pathogenic", "Pathogenic/Likely pathogenic", "Likely pathogenic"}
 ALLOWED_CLINICAL_SIGNIFICANCE = BENIGN | PATHOGENIC
-VUS_CLINICAL_SIGNIFICANCE = {"Uncertain significance"}
+VUS_CLINICAL_SIGNIFICANCE = {"Uncertain significance"}  # scored later, never used as y
 
 EXPERT_REVIEW = {"practice guideline", "reviewed by expert panel"}
 
 
 def _normalize_phenotype_list(value) -> str:
+    # ClinVar pipes several disease names together; drop placeholder tokens.
     if pd.isna(value):
         return "not provided"
     return (
@@ -56,7 +59,7 @@ def _label(clinical_significance: str) -> str:
 
 
 def _base_clean(df: pd.DataFrame) -> pd.DataFrame:
-    """Expert-reviewed SNVs with normalized phenotypes (no significance filter)."""
+    """Shared QC for labelled + VUS: expert SNVs only (indels/CNVs dropped)."""
     out = df.copy()
     out["PhenotypeList"] = out["PhenotypeList"].map(_normalize_phenotype_list)
     out = out[out["ReviewStatus"].isin(EXPERT_REVIEW)].copy()

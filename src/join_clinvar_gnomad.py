@@ -1,5 +1,8 @@
 """Left-join cleaned gnomAD frequencies onto ClinVar–UniProt position-matched tables.
 
+EDA-only. Training/CV/inference read ``clinvar_uniprot_position_matched.parquet``
+and do not use these AF columns (circular with ClinVar ACMG labels).
+
 Join key: gnomAD variant ID built from ClinVar GRCh38 ``Chromosome``, ``Start``,
 ``ReferenceAlleleVCF``, ``AlternateAlleleVCF`` (same encoding as ingest_gnomad.py).
 
@@ -29,6 +32,7 @@ JOINED_OUT = data_processed / "clinvar_uniprot_gnomad_position_matched.parquet"
 JOINED_VUS_OUT = data_processed / "clinvar_uniprot_gnomad_position_matched_vus.parquet"
 
 GNOMAD_KEEP = [
+    # Subset copied onto the ClinVar–UniProt table (not every clean_gnomad column).
     "gnomad_variant_id",
     "in_gnomad",
     "gnomad_af",
@@ -69,6 +73,7 @@ GNOMAD_KEEP = [
 
 
 def add_variant_id(df: pd.DataFrame) -> pd.DataFrame:
+    # UniProt-only rows have no chr/pos/alleles — leave the key null, no AF join.
     out = df.copy()
     out["gnomad_variant_id"] = [
         gnomad_variant_id(c, p, r, a) if pd.notna(p) and pd.notna(r) and pd.notna(a) else pd.NA
@@ -87,6 +92,7 @@ def join_gnomad(
     gnomad_cols = [c for c in GNOMAD_KEEP if c in gnomad.columns]
     right = gnomad[gnomad_cols].drop_duplicates("gnomad_variant_id")
     left = add_variant_id(clinvar)
+    # Left join: every ClinVar row kept; absent gnomAD sites → in_gnomad False.
     merged = left.merge(right, on="gnomad_variant_id", how="left")
     merged["in_gnomad"] = merged["in_gnomad"].astype("boolean").fillna(False).astype(bool)
     merged["gnomad_filter_pass"] = (

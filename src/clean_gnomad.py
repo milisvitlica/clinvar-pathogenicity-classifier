@@ -1,13 +1,14 @@
-"""Clean raw gnomAD site lookups into a frequency table.
+"""Clean raw gnomAD site lookups into a frequency table (EDA, not modeling).
 
 Reads data/raw/gnomad_clinvar_sites.parquet (from ingest_gnomad.py) and writes
 data/processed/gnomad_clean.parquet: one row per ClinVar SNV queried against
 gnomAD v4, with joint/exome/genome AC/AN/AF, filtering allele frequency, and
 continental genetic-ancestry frequencies.
 
-Preferred AF for modeling is joint (exomes+genomes) when present, else exome,
-else genome. Sites not found in gnomAD keep ``in_gnomad=False`` and null AFs
-(filled to 0 at feature-build time — ACMG PM2-style absence).
+Preferred AF is joint (exomes+genomes) when present, else exome, else genome.
+Sites not found keep ``in_gnomad=False`` and null AFs. For EDA plots,
+``add_gnomad_features`` (in features.py) fills those to 0 — that helper is not
+on the training matrix.
 """
 
 from __future__ import annotations
@@ -24,11 +25,12 @@ data_processed = project_root / "data/processed"
 GNOMAD_RAW = data_raw / "gnomad_clinvar_sites.parquet"
 GNOMAD_CLEAN = data_processed / "gnomad_clean.parquet"
 
-# Genetic ancestry groups in gnomAD v4 (skip sex-stratified ``*_XX`` / ``*_XY``).
+# Genetic ancestry groups in gnomAD v4. Ignore sex-split ids like nfe_XX / nfe_XY.
 POPULATIONS = ["afr", "ami", "amr", "asj", "eas", "fin", "mid", "nfe", "remaining", "sas"]
 
 
 def _loads(value):
+    # ingest stored nested GraphQL objects as JSON strings (or null).
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
     if isinstance(value, (dict, list)):
@@ -40,6 +42,7 @@ def _loads(value):
 
 
 def _af(ac, an) -> float | None:
+    # Allele frequency = alt copies / chromosomes sequenced at this site.
     try:
         an_f = float(an)
         ac_f = float(ac)
@@ -76,6 +79,10 @@ def _pop_map(populations: list | None, hom_key: str) -> dict[str, dict]:
 
 
 def _flatten_source(prefix: str, payload: dict | None, *, hom_key: str) -> dict:
+    """Turn one GraphQL block (exome / genome / joint) into flat columns.
+
+    hom_key differs: exome/genome use ``ac_hom``, joint uses ``homozygote_count``.
+    """
     cols = {
         f"{prefix}_ac": None,
         f"{prefix}_an": None,
@@ -107,6 +114,7 @@ def _flatten_source(prefix: str, payload: dict | None, *, hom_key: str) -> dict:
 
 
 def _preferred_af(joint_af, exome_af, genome_af):
+    # Joint has the largest sample size; fall back if that callset missed the site.
     for value in (joint_af, exome_af, genome_af):
         if value is not None and not (isinstance(value, float) and pd.isna(value)):
             return value
@@ -144,6 +152,7 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
         row.update(_flatten_source("genome", genome, hom_key="ac_hom"))
         row.update(_flatten_source("joint", joint, hom_key="homozygote_count"))
 
+        # EDA columns; FEATURE_COLUMNS in features.py does not include these.
         row["gnomad_af"] = _preferred_af(row["joint_af"], row["exome_af"], row["genome_af"])
         row["gnomad_an"] = _preferred_af(row["joint_an"], row["exome_an"], row["genome_an"])
         row["gnomad_nhomalt"] = _preferred_af(
@@ -155,6 +164,7 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
             row["genome_faf95_popmax"],
         )
         if row["gnomad_af_popmax"] is None:
+            # No FAF95: use the highest continental AF (not the "remaining" leftover group).
             pop_afs = [
                 row[f"joint_af_{pop}"] if row[f"joint_af_{pop}"] is not None
                 else row[f"exome_af_{pop}"] if row[f"exome_af_{pop}"] is not None

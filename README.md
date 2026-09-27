@@ -14,10 +14,11 @@ ingest_*.py                         -> data/raw/
 clean_*.py                          -> data/processed/
 join_clinvar_uniprot.py             -> clinvar_uniprot_joined.parquet
 position_matching_clinvar_uniprot.py -> clinvar_uniprot_position_matched.parquet
-ingest_gnomad.py / clean_gnomad.py  -> gnomAD v4 frequencies at ClinVar SNVs
-join_clinvar_gnomad.py              -> clinvar_uniprot_gnomad_position_matched.parquet
 features.py / cv_train_eval          -> matrices, splits, nested CV metrics
 final_catboost.py                    -> deployable CatBoost model + threshold
+
+# optional EDA (not used for training):
+ingest_gnomad.py / clean_gnomad.py / join_clinvar_gnomad.py
 ```
 
 ## Getting started
@@ -49,8 +50,13 @@ python src/clean_uniprot.py       # -> data/processed/uniprot_clean.parquet
 
 python src/join_clinvar_uniprot.py              # gene-level join (labelled)
 python src/position_matching_clinvar_uniprot.py # AA position + UniProt feature context
+```
 
-python src/ingest_gnomad.py         # gnomAD v4 AF for ClinVar SNVs (API; resume-safe)
+Optional **EDA** population frequencies (not model features — ClinVar labels already
+use ACMG BA1/BS1/PM2, so AF is circular with the target):
+
+```bash
+python src/ingest_gnomad.py         # gnomAD v4 AF for ClinVar SNVs (GraphQL; skips IDs already saved)
 python src/clean_gnomad.py          # -> data/processed/gnomad_clean.parquet
 python src/join_clinvar_gnomad.py   # left-join AF onto the position-matched table
 ```
@@ -60,24 +66,21 @@ Optional VUS inference table (same QC filters; not used for training):
 ```bash
 python src/join_clinvar_uniprot.py --vus
 python src/position_matching_clinvar_uniprot.py --vus
-python src/join_clinvar_gnomad.py --vus
-# -> data/processed/clinvar_uniprot_gnomad_position_matched_vus.parquet
+# -> data/processed/clinvar_uniprot_position_matched_vus.parquet
+python src/join_clinvar_gnomad.py --vus   # optional EDA only
 ```
 
 ## Modeling
 
 ### Features
 
-Structured features from the gnomAD-joined position-matched table (gene-proxy /
-high-cardinality identity fields such as Chromosome, Length, and free-text
-domain notes are **excluded**). Includes protein position, distance to closest
-UniProt feature, overlap flags (`in_domain`, …), `closest_feature_type`, alleles,
-and gnomAD v4 population frequencies (`log10_gnomad_af`, `log10_gnomad_af_popmax`,
-`log1p_gnomad_nhomalt`, `in_gnomad`, `gnomad_filter_pass`, `gnomad_af_bin`).
+Structured features from the position-matched table (gene-proxy / high-cardinality
+identity fields such as Chromosome, Length, and free-text domain notes are
+**excluded**). Includes protein position, distance to closest UniProt feature,
+overlap flags (`in_domain`, …), `closest_feature_type`, and alleles.
 
-ClinVar P/B labels already incorporate ACMG frequency evidence (BA1/BS1/PM2), so
-gnomAD AF is **partly circular** with the target — expect a large lift vs UniProt-
-only features, and do not treat it as independent biological signal.
+gnomAD allele frequencies are available for EDA (`notebooks/eda/gnomad_eda.ipynb`)
+but are **not** in the model matrix: ClinVar P/B labels already use ACMG BA1/BS1/PM2.
 
 XGBoost and CatBoost consume categoricals natively. Elastic-net logistic and
 random forest use `encode_for_sklearn()`: median-impute + scale numerics, one-hot
@@ -151,9 +154,8 @@ XGBoost stage-2 notebooks remain under `notebooks/modeling/final/deprecated/`
 # notebooks/modeling/final/infer_catboost.ipynb
 ```
 
-Scores **ClinVar VUS** from `clinvar_uniprot_gnomad_position_matched_vus.parquet`
-(falls back to the UniProt-only VUS table) with the saved CatBoost model + Youden
-threshold (writes `data/processed/vus_inference_predictions.parquet`).
+Scores **ClinVar VUS** from `clinvar_uniprot_position_matched_vus.parquet` with the
+saved CatBoost model + Youden threshold (writes `data/processed/vus_inference_predictions.parquet`).
 API: `predict_pathogenicity()` / `prepare_inference_frame()` in `src/`.
 
 ## Notebooks
@@ -184,11 +186,11 @@ The winner is the only model that goes to `final/` for full-data train + inferen
 
 ```
 src/
-  ingest_clinvar.py / ingest_uniprot.py / ingest_gnomad.py
-  clean_clinvar.py / clean_uniprot.py / clean_gnomad.py
+  ingest_clinvar.py / ingest_uniprot.py
+  clean_clinvar.py / clean_uniprot.py
   join_clinvar_uniprot.py
   position_matching_clinvar_uniprot.py
-  join_clinvar_gnomad.py
+  ingest_gnomad.py / clean_gnomad.py / join_clinvar_gnomad.py  # EDA only
   features.py                # matrices, encoding, fit helpers; optional holdout split
   cv_train_eval.py           # gene CV folds + nested CV (honest KPIs)
   cv_baselines.py            # nested CV for logistic / RF / CatBoost
@@ -200,7 +202,7 @@ notebooks/
     uniprot_eda.ipynb
     joined_clinvar_uniprot_eda.ipynb
     position_matching_eda.ipynb
-    gnomad_eda.ipynb
+    gnomad_eda.ipynb             # optional; AF not used in training
   modeling/
     cv/
       cv_xgboost.ipynb           # stage 1: nested CV (XGBoost)

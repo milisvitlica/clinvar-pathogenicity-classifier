@@ -39,7 +39,6 @@ from features import (
     GROUP_COLUMN,
     ID_COLUMN,
     TARGET_COLUMN,
-    add_gnomad_features,
     prepare_modeling_frame,
     project_root,
     resolve_position_matched_path,
@@ -58,7 +57,7 @@ def _ensure_relative_position(df: pd.DataFrame) -> pd.DataFrame:
             length = pd.to_numeric(out["Length"], errors="coerce")
             pos = pd.to_numeric(out["protein_position"], errors="coerce")
             out["relative_protein_position"] = (pos / length).where(length > 0)
-    return add_gnomad_features(out)
+    return out
 
 
 def _jsonable(value):
@@ -78,7 +77,7 @@ def _matrix_with_saved_categories(df: pd.DataFrame, meta: dict) -> pd.DataFrame:
         values = X[col].astype("string").fillna("__MISSING__")
         values = values.where(values.isin(cats), "__MISSING__")
         X[col] = values
-    return X[list(meta["feature_columns"])]
+    return X[list(meta["feature_columns"])]  # drop columns added after this model was saved
 
 
 def train_final_catboost(
@@ -98,6 +97,7 @@ def train_final_catboost(
 
     raw = pd.read_parquet(input_path or resolve_position_matched_path())
     modeling = prepare_modeling_frame(raw)
+    # Single-loop gene CV on ALL labelled rows (not nested): pick one θ* for deploy.
     folded = assign_cv_folds(modeling, n_folds=n_folds, seed=seed)
 
     best_params, best_inner_auc, n_estimators, threshold, trials = nested_tune_baseline(

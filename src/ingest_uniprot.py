@@ -19,6 +19,7 @@ data_raw = project_root / "data/raw"
 UNIPROT_PARQUET = data_raw / "uniprot_human_reviewed.parquet"
 
 SEARCH_URL = "https://rest.uniprot.org/uniprotkb/search"
+# Swiss-Prot human proteins; ft_* columns are the domain/site strings we parse later.
 FIELDS = (
     "accession,id,gene_names,protein_name,length,"
     "cc_function,cc_disease,cc_subcellular_location,cc_interaction,"
@@ -37,6 +38,7 @@ MAX_RETRIES = 5
 
 
 def _get(url: str, params: dict | None = None) -> requests.Response:
+    # Retry timeouts and UniProt's intermittent "streaming data" error body.
     last_exc: Exception | None = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -56,6 +58,7 @@ def _get(url: str, params: dict | None = None) -> requests.Response:
 
 
 def fetch() -> pd.DataFrame:
+    # Cursor pagination: follow Link: rel="next" until UniProt omits it.
     frames: list[pd.DataFrame] = []
     resp = _get(SEARCH_URL, params=PARAMS)
     total = resp.headers.get("x-total-results")

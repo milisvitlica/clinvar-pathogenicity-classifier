@@ -1,9 +1,12 @@
 """Shared feature matrices, encoding, thresholds, and optional holdout split.
 
-Reads data/processed/clinvar_uniprot_gnomad_position_matched.parquet (falls
-back to the UniProt-only position-matched table), keeps matched labelled
-variants (one row per VariationID), and provides helpers to build model
-matrices (native categoricals for XGBoost; one-hot for sklearn) and fit.
+Reads data/processed/clinvar_uniprot_position_matched.parquet, keeps matched
+labelled variants (one row per VariationID), and provides helpers to build
+model matrices (native categoricals for XGBoost; one-hot for sklearn) and fit.
+
+gnomAD frequencies are **EDA-only** (circular with ClinVar ACMG labels); they
+are not in ``FEATURE_COLUMNS``. See ``add_gnomad_features`` and
+``notebooks/eda/gnomad_eda.ipynb``.
 
 Optional CLI writes a gene-grouped train/valid/test split:
   data/processed/train.parquet
@@ -38,30 +41,22 @@ from xgboost import XGBClassifier
 project_root = Path(__file__).resolve().parents[1]
 data_processed = project_root / "data/processed"
 
-POSITION_MATCHED_IN = data_processed / "clinvar_uniprot_gnomad_position_matched.parquet"
-POSITION_MATCHED_FALLBACK_IN = data_processed / "clinvar_uniprot_position_matched.parquet"
-POSITION_MATCHED_VUS_IN = data_processed / "clinvar_uniprot_gnomad_position_matched_vus.parquet"
-POSITION_MATCHED_VUS_FALLBACK_IN = data_processed / "clinvar_uniprot_position_matched_vus.parquet"
+POSITION_MATCHED_IN = data_processed / "clinvar_uniprot_position_matched.parquet"
+POSITION_MATCHED_VUS_IN = data_processed / "clinvar_uniprot_position_matched_vus.parquet"
 TRAIN_OUT = data_processed / "train.parquet"
 VALID_OUT = data_processed / "valid.parquet"
 TEST_OUT = data_processed / "test.parquet"
 
-DEFAULT_RATIOS = (0.70, 0.15, 0.15)
+DEFAULT_RATIOS = (0.70, 0.15, 0.15)  # optional holdout only; nested CV does not use this
 DEFAULT_SEED = 42
 
-# Gene-proxy / high-cardinality identity-like columns are omitted: under
-# gene-grouped evaluation they mostly memorize training genes rather than
-# transferring biology (Chromosome/OriginSimple/Length; free-text domain notes).
-# log10(AF) rather than raw AF: frequencies are heavily right-skewed.
-# gnomAD AN is omitted — it mostly tracks gene coverage / panel membership
-# and would act as a gene proxy under gene-grouped evaluation.
+# Columns the models see. Omitted on purpose under gene-grouped CV:
+#   Chromosome / Length — nearly constant within a gene (identity leak).
+# gnomAD AF is EDA-only: ClinVar P/B labels already use ACMG BA1/BS1/PM2.
 NUMERIC_FEATURES = [
     "protein_position",
     "relative_protein_position",
     "distance_to_closest_feature",
-    "log10_gnomad_af",
-    "log10_gnomad_af_popmax",
-    "log1p_gnomad_nhomalt",
 ]
 
 BOOLEAN_FEATURES = [
@@ -75,22 +70,19 @@ BOOLEAN_FEATURES = [
     "in_mod_res",
     "in_functional_site",
     "in_any_feature",
-    "in_gnomad",
-    "gnomad_filter_pass",
 ]
 
 CATEGORICAL_FEATURES = [
     "closest_feature_type",
     "ReferenceAlleleVCF",
     "AlternateAlleleVCF",
-    "gnomad_af_bin",
 ]
 
-GNOMAD_AF_EPS = 1e-6
+GNOMAD_AF_EPS = 1e-6  # used by add_gnomad_features (EDA), not the model matrix
 
 FEATURE_COLUMNS = NUMERIC_FEATURES + BOOLEAN_FEATURES + CATEGORICAL_FEATURES
-TARGET_COLUMN = "label"
-GROUP_COLUMN = "gene"
+TARGET_COLUMN = "label"  # pathogenic vs benign
+GROUP_COLUMN = "gene"  # splits are by gene, never random rows
 ID_COLUMN = "VariationID"
 
 META_COLUMNS = [
@@ -101,9 +93,6 @@ META_COLUMNS = [
     "GeneSymbol",
     "ClinicalSignificance",
     "match_type",
-    "gnomad_af",
-    "gnomad_af_popmax",
-    "gnomad_nhomalt",
 ]
 
 DEFAULT_XGB_PARAMS = {
@@ -155,10 +144,9 @@ def _gnomad_af_bin(in_gnomad: bool, af: float) -> str:
 
 
 def add_gnomad_features(frame: pd.DataFrame) -> pd.DataFrame:
-    """Derive log-AF / AF-bin columns; absent gnomAD sites are AF = 0 (not median-imputed).
+    """EDA helper: log-AF / AF-bin columns. Not used by ``FEATURE_COLUMNS``.
 
-    ClinVar labels already use population frequency (ACMG BA1/BS1/PM2), so these
-    features are partly circular with the target — strong metrics are expected.
+    ClinVar P/B labels already use population frequency (ACMG BA1/BS1/PM2).
     """
     frame = frame.copy()
     if "in_gnomad" not in frame.columns:
@@ -186,6 +174,8 @@ def add_gnomad_features(frame: pd.DataFrame) -> pd.DataFrame:
     af_popmax = pd.to_numeric(frame["gnomad_af_popmax"], errors="coerce")
     nhom = pd.to_numeric(frame["gnomad_nhomalt"], errors="coerce")
 
+    # Absent ≠ "typical rare": fill 0 (PM2-style) so sklearn median-impute cannot
+    # replace missing AF with the training median.
     af = af.where(in_g, 0.0).fillna(0.0)
     af_popmax = af_popmax.where(in_g, 0.0).fillna(af)
     nhom = nhom.where(in_g, 0.0).fillna(0.0)
@@ -205,21 +195,16 @@ def add_gnomad_features(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def resolve_position_matched_path(*, vus: bool = False) -> Path:
-    """Prefer the gnomAD-joined table; fall back to UniProt-only position matching."""
-    primary = POSITION_MATCHED_VUS_IN if vus else POSITION_MATCHED_IN
-    fallback = POSITION_MATCHED_VUS_FALLBACK_IN if vus else POSITION_MATCHED_FALLBACK_IN
-    if primary.exists():
-        return primary
-    return fallback
+    """UniProt position-matched table used for training / CV / inference."""
+    return POSITION_MATCHED_VUS_IN if vus else POSITION_MATCHED_IN
 
 
 def prepare_modeling_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter to matched labelled variants and deduplicate to one row per VariationID."""
-    frame = df[df["match_type"] == "both"].copy()
+    """Matched P/B variants, one row per VariationID (no gnomAD features)."""
+    frame = df[df["match_type"] == "both"].copy()  # need UniProt + ClinVar
     frame = frame[frame[TARGET_COLUMN].isin(["pathogenic", "benign"])].copy()
     frame = _dedupe_matched_variants(frame)
     frame = _add_relative_protein_position(frame)
-    frame = add_gnomad_features(frame)
 
     if frame[GROUP_COLUMN].isna().any():
         raise ValueError("Modeling rows are missing gene labels needed for the group split.")
@@ -244,7 +229,6 @@ def prepare_inference_frame(
         raise ValueError("No matched variants available for inference.")
     frame = _dedupe_matched_variants(frame)
     frame = _add_relative_protein_position(frame)
-    frame = add_gnomad_features(frame)
 
     if frame[GROUP_COLUMN].isna().any():
         raise ValueError("Inference rows are missing gene labels.")
@@ -329,7 +313,7 @@ def build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     for col in CATEGORICAL_FEATURES:
         X[col] = X[col].astype("string").fillna("__MISSING__").astype("category")
 
-    y = (df[TARGET_COLUMN] == "pathogenic").astype(int)
+    y = (df[TARGET_COLUMN] == "pathogenic").astype(int)  # 1 = pathogenic, 0 = benign
     y.name = TARGET_COLUMN
     return X, y
 
@@ -338,7 +322,10 @@ def align_categories_to_train(
     train: pd.DataFrame,
     *others: pd.DataFrame,
 ) -> tuple[pd.DataFrame, ...]:
-    """Restrict categorical levels to those seen in ``train``; map others to ``__MISSING__``."""
+    """Restrict categorical levels to those seen in ``train``; map others to ``__MISSING__``.
+
+    Prevents test-set alleles/bins from leaking into training category codes.
+    """
     train = train.copy()
     others = tuple(frame.copy() for frame in others)
     for col in CATEGORICAL_FEATURES:
