@@ -144,9 +144,9 @@ def _gnomad_af_bin(in_gnomad: bool, af: float) -> str:
 
 
 def add_gnomad_features(frame: pd.DataFrame) -> pd.DataFrame:
-    """EDA helper: log-AF / AF-bin columns. Not used by ``FEATURE_COLUMNS``.
+    """EDA helper: fill absent AF to 0, add ``log10_gnomad_af`` and ``gnomad_af_bin``.
 
-    ClinVar P/B labels already use population frequency (ACMG BA1/BS1/PM2).
+    Not used by ``FEATURE_COLUMNS``. ClinVar P/B labels already use BA1/BS1/PM2.
     """
     frame = frame.copy()
     if "in_gnomad" not in frame.columns:
@@ -158,7 +158,6 @@ def add_gnomad_features(frame: pd.DataFrame) -> pd.DataFrame:
         frame["gnomad_af"] = pd.NA
         frame["gnomad_af_popmax"] = pd.NA
         frame["gnomad_nhomalt"] = pd.NA
-        frame["gnomad_filter_pass"] = False
 
     in_g = frame["in_gnomad"].fillna(False).astype(bool)
     if "gnomad_af" not in frame.columns:
@@ -167,8 +166,6 @@ def add_gnomad_features(frame: pd.DataFrame) -> pd.DataFrame:
         frame["gnomad_af_popmax"] = pd.NA
     if "gnomad_nhomalt" not in frame.columns:
         frame["gnomad_nhomalt"] = pd.NA
-    if "gnomad_filter_pass" not in frame.columns:
-        frame["gnomad_filter_pass"] = False
 
     af = pd.to_numeric(frame["gnomad_af"], errors="coerce")
     af_popmax = pd.to_numeric(frame["gnomad_af_popmax"], errors="coerce")
@@ -185,9 +182,8 @@ def add_gnomad_features(frame: pd.DataFrame) -> pd.DataFrame:
     frame["gnomad_af_popmax"] = af_popmax
     frame["gnomad_nhomalt"] = nhom
     frame["log10_gnomad_af"] = np.log10(af + GNOMAD_AF_EPS)
-    frame["log10_gnomad_af_popmax"] = np.log10(af_popmax + GNOMAD_AF_EPS)
-    frame["log1p_gnomad_nhomalt"] = np.log1p(nhom)
-    frame["gnomad_filter_pass"] = frame["gnomad_filter_pass"].fillna(False).astype(bool)
+    if "gnomad_filter_pass" in frame.columns:
+        frame["gnomad_filter_pass"] = frame["gnomad_filter_pass"].fillna(False).astype(bool)
     frame["gnomad_af_bin"] = [
         _gnomad_af_bin(flag, float(freq)) for flag, freq in zip(in_g, af)
     ]
