@@ -22,6 +22,8 @@ models/
 
 # Logs
 *.log
+# CatBoost cwd fallback; real train logs live under models/catboost_info
+catboost_info/
 
 # OS
 .DS_Store

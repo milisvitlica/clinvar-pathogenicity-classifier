@@ -31,7 +31,17 @@ from features import (
     classification_metrics_at_threshold,
     encode_for_sklearn,
     pick_threshold,
+    project_root,
 )
+
+# CatBoost otherwise dumps TensorBoard/error logs into cwd/catboost_info.
+CATBOOST_TRAIN_DIR = project_root / "models" / "catboost_info"
+
+
+def catboost_train_dir() -> str:
+    """Directory for CatBoost training logs (not the saved .cbm)."""
+    CATBOOST_TRAIN_DIR.mkdir(parents=True, exist_ok=True)
+    return str(CATBOOST_TRAIN_DIR)
 
 LOGISTIC_PARAM_DISTRIBUTIONS = {
     "C": [0.01, 0.1, 1.0, 10.0],
@@ -211,6 +221,8 @@ def fit_catboost(
         learning_rate=float(params["learning_rate"]),
         l2_leaf_reg=float(params["l2_leaf_reg"]),
         subsample=float(params["subsample"]),
+        train_dir=catboost_train_dir(),
+        allow_writing_files=True,
     )
     if use_es:
         model_kwargs["od_type"] = "Iter"

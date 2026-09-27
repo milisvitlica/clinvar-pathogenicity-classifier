@@ -27,6 +27,7 @@ import pandas as pd
 
 from cv_baselines import (
     CATBOOST_PARAM_DISTRIBUTIONS,
+    catboost_train_dir,
     fit_catboost,
     nested_tune_baseline,
     prepare_catboost_matrix,
@@ -126,6 +127,8 @@ def train_final_catboost(
         learning_rate=float(params["learning_rate"]),
         l2_leaf_reg=float(params["l2_leaf_reg"]),
         subsample=float(params["subsample"]),
+        train_dir=catboost_train_dir(),
+        allow_writing_files=True,
     )
     model.fit(X, y, cat_features=cat_idx)
 
