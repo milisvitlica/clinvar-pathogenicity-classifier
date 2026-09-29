@@ -8,6 +8,10 @@ gnomAD frequencies are **EDA-only** (circular with ClinVar ACMG labels); they
 are not in ``FEATURE_COLUMNS``. See ``add_gnomad_features`` and
 ``notebooks/eda/gnomad_eda.ipynb``.
 
+PhyloP100way (UCSC hg38) **is** a model feature. Conservation is sometimes
+ACMG PP3/BP4 (supporting/moderate computational evidence), not stand-alone
+like BA1 — milder leakage than AF. See ``add_phylop_features``.
+
 Optional CLI writes a gene-grouped train/valid/test split:
   data/processed/train.parquet
   data/processed/valid.parquet
@@ -43,6 +47,7 @@ data_processed = project_root / "data/processed"
 
 POSITION_MATCHED_IN = data_processed / "clinvar_uniprot_position_matched.parquet"
 POSITION_MATCHED_VUS_IN = data_processed / "clinvar_uniprot_position_matched_vus.parquet"
+PHYLOP_CLEAN = data_processed / "phylop_clean.parquet"
 TRAIN_OUT = data_processed / "train.parquet"
 VALID_OUT = data_processed / "valid.parquet"
 TEST_OUT = data_processed / "test.parquet"
@@ -53,10 +58,12 @@ DEFAULT_SEED = 42
 # Columns the models see. Omitted on purpose under gene-grouped CV:
 #   Chromosome / Length — nearly constant within a gene (identity leak).
 # gnomAD AF is EDA-only: ClinVar P/B labels already use ACMG BA1/BS1/PM2.
+# phylop_100way: PP3/BP4-style conservation (supporting/moderate, not BA1).
 NUMERIC_FEATURES = [
     "protein_position",
     "relative_protein_position",
     "distance_to_closest_feature",
+    "phylop_100way",
 ]
 
 BOOLEAN_FEATURES = [
@@ -190,6 +197,37 @@ def add_gnomad_features(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def _clinvar_chrom_key(chrom) -> str:
+    return str(chrom).removeprefix("chr")
+
+
+def add_phylop_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Left-join UCSC phyloP100way (reference-base conservation) for the model.
+
+    Requires ``data/processed/phylop_clean.parquet`` from ``ingest_phylop.py``.
+    Missing sites (e.g. MT) stay NA; trees use native NA, sklearn median-imputes.
+    """
+    frame = frame.copy()
+    if "phylop_100way" in frame.columns and frame["phylop_100way"].notna().any():
+        frame["phylop_100way"] = pd.to_numeric(frame["phylop_100way"], errors="coerce")
+        return frame
+    if not PHYLOP_CLEAN.exists():
+        raise FileNotFoundError(
+            f"Missing {PHYLOP_CLEAN}. Run python src/ingest_phylop.py"
+        )
+    phy = pd.read_parquet(PHYLOP_CLEAN, columns=["chrom", "pos", "phylop_100way"])
+    phy = phy.drop_duplicates(["chrom", "pos"])
+    phy["chrom"] = phy["chrom"].map(_clinvar_chrom_key)
+    phy["pos"] = pd.to_numeric(phy["pos"], errors="coerce").astype("Int64")
+    keys = pd.DataFrame({
+        "chrom": frame["Chromosome"].map(_clinvar_chrom_key),
+        "pos": pd.to_numeric(frame["Start"], errors="coerce").astype("Int64"),
+    })
+    scores = keys.merge(phy, on=["chrom", "pos"], how="left")["phylop_100way"]
+    frame["phylop_100way"] = pd.to_numeric(scores.to_numpy(), errors="coerce")
+    return frame
+
+
 def resolve_position_matched_path(*, vus: bool = False) -> Path:
     """UniProt position-matched table used for training / CV / inference."""
     return POSITION_MATCHED_VUS_IN if vus else POSITION_MATCHED_IN
@@ -201,6 +239,7 @@ def prepare_modeling_frame(df: pd.DataFrame) -> pd.DataFrame:
     frame = frame[frame[TARGET_COLUMN].isin(["pathogenic", "benign"])].copy()
     frame = _dedupe_matched_variants(frame)
     frame = _add_relative_protein_position(frame)
+    frame = add_phylop_features(frame)
 
     if frame[GROUP_COLUMN].isna().any():
         raise ValueError("Modeling rows are missing gene labels needed for the group split.")
@@ -225,6 +264,7 @@ def prepare_inference_frame(
         raise ValueError("No matched variants available for inference.")
     frame = _dedupe_matched_variants(frame)
     frame = _add_relative_protein_position(frame)
+    frame = add_phylop_features(frame)
 
     if frame[GROUP_COLUMN].isna().any():
         raise ValueError("Inference rows are missing gene labels.")

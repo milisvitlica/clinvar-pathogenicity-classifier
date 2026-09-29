@@ -17,6 +17,9 @@ position_matching_clinvar_uniprot.py -> clinvar_uniprot_position_matched.parquet
 features.py / cv_train_eval          -> matrices, splits, nested CV metrics
 final_catboost.py                    -> deployable CatBoost model + threshold
 
+# model feature (conservation; PP3/BP4-style, not BA1):
+ingest_phylop.py                     -> phylop_clean.parquet
+
 # optional EDA (not used for training):
 ingest_gnomad.py / clean_gnomad.py / join_clinvar_gnomad.py
 ```
@@ -70,6 +73,18 @@ python src/position_matching_clinvar_uniprot.py --vus
 python src/join_clinvar_gnomad.py --vus   # optional EDA only
 ```
 
+PhyloP conservation (UCSC hg38 phyloP100way) **is** a model feature:
+
+```bash
+python src/ingest_phylop.py       # -> data/processed/phylop_clean.parquet
+```
+
+Joined at train/inference time in `prepare_modeling_frame` / `prepare_inference_frame`.
+PhyloP is sometimes ACMG **PP3/BP4**, as supporting/moderate computational evidence,
+not stand-alone like **BA1**. Milder label leakage than gnomAD AF; gene-holdout
+does not remove it (constraint is per-site). Re-run nested CV / `final_catboost.py`
+after ingest so the shipped model includes `phylop_100way`.
+
 ## Modeling
 
 ### Features
@@ -77,10 +92,14 @@ python src/join_clinvar_gnomad.py --vus   # optional EDA only
 Structured features from the position-matched table (gene-proxy / high-cardinality
 identity fields such as Chromosome, Length, and free-text domain notes are
 **excluded**). Includes protein position, distance to closest UniProt feature,
-overlap flags (`in_domain`, …), `closest_feature_type`, and alleles.
+overlap flags (`in_domain`, …), `closest_feature_type`, alleles, and
+`phylop_100way` (UCSC 100-way vertebrate conservation at the GRCh38 reference base).
 
 gnomAD allele frequencies are available for EDA (`notebooks/eda/gnomad_eda.ipynb`)
 but are **not** in the model matrix: ClinVar P/B labels already use ACMG BA1/BS1/PM2.
+
+PhyloP sometimes PP3/BP4, as supporting/moderate computational evidence, not
+stand-alone like BA1.
 
 XGBoost and CatBoost consume categoricals natively. Elastic-net logistic and
 random forest use `encode_for_sklearn()`: median-impute + scale numerics, one-hot
@@ -167,6 +186,7 @@ API: `predict_pathogenicity()` / `prepare_inference_frame()` in `src/`.
 - `joined_clinvar_uniprot_eda.ipynb`
 - `position_matching_eda.ipynb`
 - `gnomad_eda.ipynb`
+- `phylop_eda.ipynb`
 
 ### Modeling (`notebooks/modeling/`)
 
@@ -191,6 +211,7 @@ src/
   join_clinvar_uniprot.py
   position_matching_clinvar_uniprot.py
   ingest_gnomad.py / clean_gnomad.py / join_clinvar_gnomad.py  # EDA only
+  ingest_phylop.py           # UCSC phyloP100way (model feature)
   features.py                # matrices, encoding, fit helpers; optional holdout split
   cv_train_eval.py           # gene CV folds + nested CV (honest KPIs)
   cv_baselines.py            # nested CV for logistic / RF / CatBoost
@@ -203,6 +224,7 @@ notebooks/
     joined_clinvar_uniprot_eda.ipynb
     position_matching_eda.ipynb
     gnomad_eda.ipynb             # optional; AF not used in training
+    phylop_eda.ipynb             # phyloP100way (model feature; PP3/BP4 caveat)
   modeling/
     cv/
       cv_xgboost.ipynb           # stage 1: nested CV (XGBoost)
